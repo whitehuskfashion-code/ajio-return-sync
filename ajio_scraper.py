@@ -34,22 +34,71 @@ def screenshot(driver, name):
     try: driver.save_screenshot(f"downloads/debug_{name}.png")
     except: pass
 
-def login(driver, username, password):
+def login(driver, username: str, password: str):
+    logger.info("Opening landing page...")
     driver.get(LOGIN_URL)
     wait = WebDriverWait(driver, 30)
-    for sel in [(By.NAME,"username"),(By.NAME,"email"),(By.ID,"username"),(By.XPATH,"//input[@type='email' or @type='text'][1]")]:
-        try: u=wait.until(EC.presence_of_element_located(sel)); u.clear(); u.send_keys(username); break
-        except: continue
-    for sel in [(By.NAME,"password"),(By.ID,"password"),(By.XPATH,"//input[@type='password']")]:
-        try: p=driver.find_element(*sel); p.clear(); p.send_keys(password); break
-        except: continue
-    for sel in [(By.XPATH,"//button[@type='submit']"),(By.XPATH,"//button[contains(translate(text(),'LOGIN','login'),'login')]")]:
-        try: driver.find_element(*sel).click(); break
-        except: continue
-    try: wait.until(lambda d: "seller.ajio.com" in d.current_url and "login" not in d.current_url.lower())
-    except: pass
+
+    # ── Step 1: Click the "Log in" button to open the modal ──
+    login_trigger = wait.until(EC.element_to_be_clickable((
+        By.XPATH,
+        "//a[normalize-space(text())='Log in'] | "
+        "//button[normalize-space(text())='Log in'] | "
+        "//a[contains(@href,'login')] | "
+        "//*[contains(@class,'login') and (self::a or self::button)]"
+    )))
+    login_trigger.click()
+    logger.info("Clicked 'Log in' trigger button")
+    time.sleep(1.5)   # wait for modal animation
+    screenshot(driver, "01_modal_open")
+
+    # ── Step 2: Fill username in the modal ───────────────────
+    # Label in modal: "Username / Email ID*"
+    username_field = wait.until(EC.element_to_be_clickable((
+        By.XPATH,
+        "//input[@type='text' or @type='email' or @name='username' or @name='email' or @id='username']"
+        "[not(ancestor::*[contains(@style,'display:none') or contains(@style,'display: none')])]"
+    )))
+    username_field.clear()
+    username_field.send_keys(username)
+    logger.info("Username entered")
+
+    # ── Step 3: Fill password ─────────────────────────────────
+    password_field = wait.until(EC.element_to_be_clickable((
+        By.XPATH, "//input[@type='password']"
+    )))
+    password_field.clear()
+    password_field.send_keys(password)
+    logger.info("Password entered")
+    screenshot(driver, "02_creds_filled")
+
+    # ── Step 4: Click "Log in" inside the modal ───────────────
+    # The modal's submit button says "Log in"
+    submit_btn = wait.until(EC.element_to_be_clickable((
+        By.XPATH,
+        "//button[normalize-space(text())='Log in' and @type='submit'] | "
+        "//button[normalize-space(text())='Log in'][not(@disabled)]"
+    )))
+    submit_btn.click()
+    logger.info("Submitted login form")
+
+    # ── Step 5: Wait for redirect to seller dashboard ─────────
+    # After login, URL changes away from the landing page root
+    try:
+        wait.until(lambda d: d.current_url.rstrip("/") != LOGIN_URL.rstrip("/"))
+        logger.info(f"Redirected to: {driver.current_url}")
+    except Exception:
+        # Sometimes URL stays similar but modal disappears — check for modal gone
+        try:
+            wait.until(EC.invisibility_of_element_located((
+                By.XPATH, "//button[normalize-space(text())='Log in'][@type='submit']"
+            )))
+            logger.info("Modal closed — assuming login succeeded")
+        except Exception:
+            logger.warning("Could not confirm login redirect, continuing anyway...")
+
     time.sleep(3)
-    screenshot(driver, "after_login")
+    screenshot(driver, "03_after_login")
     logger.info(f"Post-login URL: {driver.current_url}")
 
 def set_dropdown(driver, wait, label, option):
@@ -99,7 +148,18 @@ def download_report(driver, from_dt, to_dt, download_dir, label):
     abs_dl = os.path.abspath(download_dir)
     wait   = WebDriverWait(driver, 60)
     logger.info(f"[{label}] {from_dt.date()} → {to_dt.date()}")
-    driver.get(REPORTS_URL); time.sleep(3)
+    driver.get(REPORTS_URL)
+    time.sleep(3)
+
+    # ── Guard: if redirected to login page, raise clearly ─────
+    if "ajiocommerce" in driver.current_url and "reports" not in driver.current_url:
+        screenshot(driver, f"{run_label}_LOGIN_REDIRECT_ERROR")
+        raise RuntimeError(
+            f"[{run_label}] Redirected to login instead of reports! "
+            f"Current URL: {driver.current_url} — Login likely failed."
+        )
+
+    screenshot(driver, f"{run_label}_01_reports")
     screenshot(driver, f"{label}_01")
     set_dropdown(driver, wait, "Report Type", "Dropship Rtv Report"); time.sleep(1)
     set_date(driver, wait, "From Date", from_dt)
