@@ -1,0 +1,48 @@
+name: AJIO Return Sync
+
+on:
+  schedule:
+    - cron: "0 1 * * *"   # 6:30 AM IST daily
+  workflow_dispatch:       # manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Chrome
+        run: |
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list'
+          sudo apt-get update -q && sudo apt-get install -y google-chrome-stable
+
+      - run: pip install -r requirements.txt
+
+      - run: mkdir -p downloads output
+
+      - name: Run sync
+        env:
+          AJIO_USERNAME:           ${{ secrets.AJIO_USERNAME }}
+          AJIO_PASSWORD:           ${{ secrets.AJIO_PASSWORD }}
+          GOOGLE_SHEET_ID:         ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: python main.py
+
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_id }}
+          path: |
+            downloads/debug_*.png
+            run.log
+            output/*.xlsx
+          retention-days: 7
