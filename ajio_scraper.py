@@ -20,15 +20,30 @@ def build_driver(download_dir: str) -> webdriver.Chrome:
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
+
+    # ── Anti-bot detection ────────────────────────────────────
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+    opts.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/147.0.0.0 Safari/537.36"
+    )
+
     opts.add_experimental_option("prefs", {
         "download.default_directory": abs_dl,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
         "safebrowsing.enabled": True,
     })
-    # Selenium Manager (built into Selenium 4.6+) auto-downloads
-    # the correct ChromeDriver — no external library needed
-    return webdriver.Chrome(options=opts)
+    driver = webdriver.Chrome(options=opts)
+
+    # Mask webdriver property via JS
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    })
+    return driver
 
 def screenshot(driver, name):
     try: driver.save_screenshot(f"downloads/debug_{name}.png")
@@ -37,65 +52,107 @@ def screenshot(driver, name):
 def login(driver, username: str, password: str):
     logger.info("Opening landing page...")
     driver.get(LOGIN_URL)
-    wait = WebDriverWait(driver, 30)
 
-    # ── Step 1: Click the "Log in" button to open the modal ──
-    login_trigger = wait.until(EC.element_to_be_clickable((
-        By.XPATH,
-        "//a[normalize-space(text())='Log in'] | "
-        "//button[normalize-space(text())='Log in'] | "
-        "//a[contains(@href,'login')] | "
-        "//*[contains(@class,'login') and (self::a or self::button)]"
-    )))
-    login_trigger.click()
-    logger.info("Clicked 'Log in' trigger button")
-    time.sleep(1.5)   # wait for modal animation
+    # Screenshot immediately — tells us what headless actually sees
+    time.sleep(5)
+    screenshot(driver, "00_landing_page")
+    logger.info(f"Landing page URL: {driver.current_url}")
+    logger.info(f"Page title: {driver.title}")
+
+    wait = WebDriverWait(driver, 45)
+
+    # ── Step 1: Click "Log in" button (top-right of landing page) ──
+    # "Log in →" — use contains() to handle the arrow character
+    clicked = False
+    selectors_to_try = [
+        (By.XPATH,  "//*[contains(text(),'Log in') and (self::a or self::button)]"),
+        (By.XPATH,  "//a[contains(text(),'Log')]"),
+        (By.XPATH,  "//button[contains(text(),'Log')]"),
+        (By.XPATH,  "//*[contains(@class,'login') or contains(@class,'Login') or contains(@class,'signin')]"),
+        (By.XPATH,  "//a[contains(@href,'login') or contains(@href,'signin')]"),
+        (By.CSS_SELECTOR, "a.login, button.login, .login-btn, .signin-btn, [class*='login']"),
+    ]
+
+    for sel_type, sel_val in selectors_to_try:
+        try:
+            el = wait.until(EC.element_to_be_clickable((sel_type, sel_val)))
+            driver.execute_script("arguments[0].scrollIntoView(true);", el)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].click();", el)  # JS click avoids interception
+            logger.info(f"Clicked login trigger using: {sel_val}")
+            clicked = True
+            break
+        except Exception:
+            continue
+
+    if not clicked:
+        # Last resort: dump all links so we can debug
+        all_links = driver.execute_script(
+            "return Array.from(document.querySelectorAll('a,button')).map(e => e.outerHTML).join('\\n')"
+        )
+        logger.error(f"Could not find Log in button. All links/buttons on page:\n{all_links[:3000]}")
+        screenshot(driver, "00_login_button_not_found")
+        raise RuntimeError("Login button not found on landing page")
+
+    time.sleep(2)
     screenshot(driver, "01_modal_open")
 
-    # ── Step 2: Fill username in the modal ───────────────────
-    # Label in modal: "Username / Email ID*"
-    username_field = wait.until(EC.element_to_be_clickable((
-        By.XPATH,
-        "//input[@type='text' or @type='email' or @name='username' or @name='email' or @id='username']"
-        "[not(ancestor::*[contains(@style,'display:none') or contains(@style,'display: none')])]"
-    )))
-    username_field.clear()
-    username_field.send_keys(username)
-    logger.info("Username entered")
+    # ── Step 2: Fill username ─────────────────────────────────
+    for sel in [
+        (By.XPATH, "//input[@type='text' and not(@readonly)]"),
+        (By.XPATH, "//input[@type='email']"),
+        (By.XPATH, "//input[contains(@placeholder,'Username') or contains(@placeholder,'Email') or contains(@placeholder,'email')]"),
+        (By.NAME,  "username"),
+        (By.NAME,  "email"),
+    ]:
+        try:
+            u = wait.until(EC.element_to_be_clickable(sel))
+            u.clear()
+            u.send_keys(username)
+            logger.info(f"Username entered using {sel}")
+            break
+        except Exception:
+            continue
 
     # ── Step 3: Fill password ─────────────────────────────────
-    password_field = wait.until(EC.element_to_be_clickable((
-        By.XPATH, "//input[@type='password']"
-    )))
-    password_field.clear()
-    password_field.send_keys(password)
-    logger.info("Password entered")
+    for sel in [
+        (By.XPATH, "//input[@type='password']"),
+        (By.NAME,  "password"),
+    ]:
+        try:
+            p = driver.find_element(*sel)
+            p.clear()
+            p.send_keys(password)
+            logger.info("Password entered")
+            break
+        except Exception:
+            continue
+
     screenshot(driver, "02_creds_filled")
 
-    # ── Step 4: Click "Log in" inside the modal ───────────────
-    # The modal's submit button says "Log in"
-    submit_btn = wait.until(EC.element_to_be_clickable((
-        By.XPATH,
-        "//button[normalize-space(text())='Log in' and @type='submit'] | "
-        "//button[normalize-space(text())='Log in'][not(@disabled)]"
-    )))
-    submit_btn.click()
-    logger.info("Submitted login form")
-
-    # ── Step 5: Wait for redirect to seller dashboard ─────────
-    # After login, URL changes away from the landing page root
-    try:
-        wait.until(lambda d: d.current_url.rstrip("/") != LOGIN_URL.rstrip("/"))
-        logger.info(f"Redirected to: {driver.current_url}")
-    except Exception:
-        # Sometimes URL stays similar but modal disappears — check for modal gone
+    # ── Step 4: Click submit inside modal ─────────────────────
+    for sel in [
+        (By.XPATH, "//button[@type='submit']"),
+        (By.XPATH, "//button[contains(text(),'Log in')]"),
+        (By.XPATH, "//button[contains(text(),'Login')]"),
+        (By.XPATH, "//button[contains(text(),'Sign in')]"),
+    ]:
         try:
-            wait.until(EC.invisibility_of_element_located((
-                By.XPATH, "//button[normalize-space(text())='Log in'][@type='submit']"
-            )))
-            logger.info("Modal closed — assuming login succeeded")
+            btn = wait.until(EC.element_to_be_clickable(sel))
+            driver.execute_script("arguments[0].click();", btn)
+            logger.info(f"Submit clicked using {sel}")
+            break
         except Exception:
-            logger.warning("Could not confirm login redirect, continuing anyway...")
+            continue
+
+    # ── Step 5: Wait for dashboard ────────────────────────────
+    try:
+        wait.until(lambda d: (
+            "login" not in d.current_url.lower() and
+            d.current_url.rstrip("/") != LOGIN_URL.rstrip("/")
+        ))
+    except Exception:
+        pass
 
     time.sleep(3)
     screenshot(driver, "03_after_login")
