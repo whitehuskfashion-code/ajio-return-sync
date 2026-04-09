@@ -1,7 +1,7 @@
 import os, time, logging
 from datetime import datetime, timedelta
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
+#from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -12,19 +12,23 @@ logger = logging.getLogger(__name__)
 LOGIN_URL   = "https://seller.ajio.com/ajiocommerce/"
 REPORTS_URL = "https://seller.ajio.com/vmsui/reports/ViewReports"
 
-def build_driver(download_dir):
+def build_driver(download_dir: str) -> webdriver.Chrome:
     abs_dl = os.path.abspath(download_dir)
     opts = Options()
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
     opts.add_experimental_option("prefs", {
         "download.default_directory": abs_dl,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
     })
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+    # Selenium Manager (built into Selenium 4.6+) auto-downloads
+    # the correct ChromeDriver — no external library needed
+    return webdriver.Chrome(options=opts)
 
 def screenshot(driver, name):
     try: driver.save_screenshot(f"downloads/debug_{name}.png")
