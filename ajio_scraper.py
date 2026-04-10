@@ -278,9 +278,21 @@ def download_report(driver, from_dt, to_dt, download_dir, label):
     try: wait.until(EC.presence_of_element_located((By.XPATH, "//table//tbody//tr")))
     except: pass
     time.sleep(4); screenshot(driver, f"{label}_03_table")
+    # ── Check for empty data before trying to Export ───────────
+    try:
+        no_data = driver.find_element(
+            By.XPATH,
+            "//*[contains(text(),'No Data to show') or contains(text(),'No data to show') or contains(text(),'No Data To Show')]"
+        )
+        if no_data.is_displayed():
+            logger.warning(f"[{label}] No data found for this date range — skipping export")
+            return None   # ← caller must handle None
+    except:
+        pass  # element not found = data exists, proceed normally
+
     before = set(os.listdir(abs_dl))
     wait.until(EC.element_to_be_clickable(
-        (By.XPATH, "//button[normalize-space(text())='Export' or normalize-space(text())='EXPORT']")
+        (By.XPATH, "//button[contains(., 'Export') or contains(., 'EXPORT')]")
     )).click()
     path = wait_for_download(abs_dl, before)
     logger.info(f"[{label}] Downloaded: {path}")
@@ -295,9 +307,24 @@ def run_scraper(username, password, download_dir="downloads"):
     try:
         login(driver, username, password)
         p_a = download_report(driver, run_a_from, run_a_to, download_dir, "RunA")
-        path_a = os.path.join(download_dir, "run_a.xlsx"); os.replace(p_a, path_a)
+        if p_a is not None:
+            path_a = os.path.join(download_dir, "run_a.xlsx")
+            os.replace(p_a, path_a)
+        else:
+            path_a = None
+            logger.warning("[RunA] No data — skipped")
+
         p_b = download_report(driver, run_b_from, run_b_to, download_dir, "RunB")
-        path_b = os.path.join(download_dir, "run_b.xlsx"); os.replace(p_b, path_b)
+        if p_b is not None:
+            path_b = os.path.join(download_dir, "run_b.xlsx")
+            os.replace(p_b, path_b)
+        else:
+            path_b = None
+            logger.warning("[RunB] No data — skipped")
+
+        if path_a is None and path_b is None:
+            raise RuntimeError("Both RunA and RunB have no data — nothing to process!")
+
         return path_a, path_b
     finally:
         driver.quit()
