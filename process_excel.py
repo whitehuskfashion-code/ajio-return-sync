@@ -59,4 +59,16 @@ def combine_runs(df_a: pd.DataFrame, df_b: pd.DataFrame) -> pd.DataFrame:
     return deduped
 
 def process_both(path_a: str, path_b: str) -> pd.DataFrame:
-    return combine_runs(process_single(path_a), process_single(path_b))
+    df_a = process_single(path_a) if path_a is not None else None
+    df_b = process_single(path_b) if path_b is not None else None
+
+    if df_a is not None and df_b is not None:
+        return combine_runs(df_a, df_b)
+    elif df_a is not None:
+        logger.info("Only RunA has data — using RunA only")
+        return df_a
+    elif df_b is not None:
+        logger.info("Only RunB has data — using RunB only")
+        return df_b
+    else:
+        raise RuntimeError("Both RunA and RunB processed as None — nothing to sync!")
