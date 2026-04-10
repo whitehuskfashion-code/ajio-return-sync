@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 SHEET_TAB     = "AJIO_RETURN"
-TRACKER_TAB   = "AJIO_NOT_RETURNED_TICKETS"
+TRACKER_TAB   = "AJIO_TICKETS"
 SCOPES        = ["https://www.googleapis.com/auth/spreadsheets",
                  "https://www.googleapis.com/auth/drive"]
 
@@ -95,7 +95,7 @@ def _read_tracker(tracker_ws) -> dict:
         col_date   = header.index("DATE_IDENTIFIED")
         col_ticket = header.index("TICKET_CREATED_DATE")
     except ValueError:
-        logger.error("AJIO_NOT_RETURNED_TICKETS headers not found!")
+        logger.error("AJIO_TICKETS headers not found!")
         return {}
 
     result = {}
