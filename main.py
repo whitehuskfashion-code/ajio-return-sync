@@ -27,6 +27,8 @@ def main():
     logger.info("STEP 1 — Downloading from Ajio...")
     try:
         path_a, path_b = run_scraper(username, password, "downloads")
+        excel_files = [p for p in [path_a, path_b] if p is not None]
+        logger.info(f"Will process {len(excel_files)} file(s)")
     except Exception as e:
         logger.exception(f"Scraping failed: {e}"); sys.exit(1)
 
