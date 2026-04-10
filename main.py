@@ -9,6 +9,7 @@ logger = logging.getLogger("main")
 from ajio_scraper  import run_scraper
 from process_excel import process_both
 from sync_gsheet   import sync
+from alerts        import run_alerts
 from datetime import datetime
 
 def env(key):
@@ -47,6 +48,19 @@ def main():
         sync(df, sheet_id, creds_json)
     except Exception as e:
         logger.exception(f"Sync failed: {e}"); sys.exit(1)
+
+    logger.info("STEP 4 — Running alerts...")
+    try:
+        run_alerts(
+            sheet_id       = sheet_id,
+            creds_json_str = creds_json,
+            email_sender   = env("EMAIL_SENDER"),
+            email_password = env("EMAIL_APP_PASSWORD"),
+            email_to_str   = env("EMAIL_TO"),
+        )
+    except Exception as e:
+        logger.exception(f"Alerts failed: {e}")
+        # ← no sys.exit here — alerts failing should NOT kill the whole run
 
     logger.info("DONE ✅")
 
