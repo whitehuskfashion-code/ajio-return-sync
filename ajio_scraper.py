@@ -230,13 +230,13 @@ def download_report(driver, from_dt, to_dt, download_dir, label):
 
     # ── Guard: if redirected to login page, raise clearly ─────
     if "ajiocommerce" in driver.current_url and "reports" not in driver.current_url:
-        screenshot(driver, f"{run_label}_LOGIN_REDIRECT_ERROR")
+        screenshot(driver, f"{label}_LOGIN_REDIRECT_ERROR")
         raise RuntimeError(
-            f"[{run_label}] Redirected to login instead of reports! "
+            f"[{label}] Redirected to login instead of reports! "
             f"Current URL: {driver.current_url} — Login likely failed."
         )
 
-    screenshot(driver, f"{run_label}_01_reports")
+    screenshot(driver, f"{label}_01_reports")
     screenshot(driver, f"{label}_01")
     set_dropdown(driver, wait, "Report Type", "Dropship Rtv Report"); time.sleep(1)
     set_date(driver, wait, "From Date", from_dt)
