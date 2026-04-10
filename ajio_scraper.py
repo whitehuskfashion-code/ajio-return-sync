@@ -197,20 +197,48 @@ def set_dropdown(driver, wait, label, option):
     except Exception as e:
         logger.error(f"Dropdown '{label}'→'{option}' failed: {e}"); raise
 
-def set_date(driver, wait, label, dt):
-    date_str = dt.strftime("%d-%m-%Y")
-    for xpath in [
+def set_date(driver, wait, label: str, dt: datetime):
+    iso_val = dt.strftime("%Y-%m-%d")   # YYYY-MM-DD — HTML input internal format
+
+    date_xpaths = [
         f"//*[contains(text(),'{label}')]/following::input[@type='date'][1]",
         f"//*[contains(text(),'{label}')]/following::input[contains(@class,'date')][1]",
         f"//*[contains(text(),'{label}')]/following::input[1]",
-    ]:
+    ]
+
+    for xpath in date_xpaths:
         try:
-            inp = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
-            inp.click(); inp.send_keys(Keys.CONTROL+"a"); inp.send_keys(Keys.DELETE)
-            time.sleep(0.2); inp.send_keys(date_str)
-            logger.info(f"Date '{label}' = {date_str}"); return
-        except: continue
-    raise RuntimeError(f"Date field not found: {label}")
+            inp = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, xpath)))
+
+            # JS setter — works with React/Angular controlled inputs
+            driver.execute_script("""
+                var inp = arguments[0];
+                var val = arguments[1];
+                var nativeSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                nativeSetter.call(inp, val);
+                inp.dispatchEvent(new Event('input',  { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+            """, inp, iso_val)
+
+            time.sleep(0.3)
+            actual = inp.get_attribute("value")
+            if actual == iso_val:
+                logger.info(f"Date '{label}' set to {iso_val} ✅")
+                return
+
+            # Fallback: send_keys with YYYY-MM-DD
+            inp.click()
+            inp.send_keys(Keys.CONTROL + "a")
+            inp.send_keys(Keys.DELETE)
+            inp.send_keys(iso_val)
+            logger.info(f"Date '{label}' sent via keys: {iso_val}")
+            return
+
+        except Exception:
+            continue
+
+    raise RuntimeError(f"Date field not found for: '{label}'")
 
 def wait_for_download(download_dir, before, timeout=180):
     end = time.time() + timeout
@@ -242,9 +270,11 @@ def download_report(driver, from_dt, to_dt, download_dir, label):
     set_date(driver, wait, "From Date", from_dt)
     set_date(driver, wait, "To Date",   to_dt)
     screenshot(driver, f"{label}_02_dates")
-    wait.until(EC.element_to_be_clickable(
-        (By.XPATH, "//button[normalize-space(text())='View' or normalize-space(text())='VIEW']")
-    )).click()
+    view_btn = wait.until(EC.element_to_be_clickable(
+        (By.XPATH, "//button[contains(., 'View') and not(contains(., 'Preview'))]")
+    ))
+    driver.execute_script("arguments[0].click();", view_btn)
+    logger.info(f"[{label}] Clicked View")
     try: wait.until(EC.presence_of_element_located((By.XPATH, "//table//tbody//tr")))
     except: pass
     time.sleep(4); screenshot(driver, f"{label}_03_table")
