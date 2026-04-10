@@ -64,14 +64,34 @@ def login(driver, username: str, password: str):
     # ── Step 1: Click "Log in" button (top-right of landing page) ──
     # "Log in →" — use contains() to handle the arrow character
     clicked = False
+    # ── Step 1: Click "Log in" button ────────────────────────
+    # Button structure: <button id="ui-btn"><span>Log in</span><img/></button>
+    # Text is in child <span>, NOT directly on button — must use .// to search descendants
+    clicked = False
     selectors_to_try = [
-        (By.XPATH,  "//*[contains(text(),'Log in') and (self::a or self::button)]"),
-        (By.XPATH,  "//a[contains(text(),'Log')]"),
-        (By.XPATH,  "//button[contains(text(),'Log')]"),
-        (By.XPATH,  "//*[contains(@class,'login') or contains(@class,'Login') or contains(@class,'signin')]"),
-        (By.XPATH,  "//a[contains(@href,'login') or contains(@href,'signin')]"),
-        (By.CSS_SELECTOR, "a.login, button.login, .login-btn, .signin-btn, [class*='login']"),
+        (By.XPATH,        "//button[.//span[normalize-space(text())='Log in']]"),
+        (By.XPATH,        "//button[@id='ui-btn'][contains(@class,'ui-btn-yellow')]"),
+        (By.CSS_SELECTOR, "button.ui-btn-yellow"),
+        (By.CSS_SELECTOR, "button#ui-btn"),
+        (By.XPATH,        "//button[contains(@class,'ui-btn')][1]"),
     ]
+
+    for sel_type, sel_val in selectors_to_try:
+        try:
+            el = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((sel_type, sel_val)))
+            driver.execute_script("arguments[0].click();", el)
+            logger.info(f"Clicked login trigger: {sel_val}")
+            clicked = True
+            break
+        except Exception:
+            continue
+
+    if not clicked:
+        screenshot(driver, "00_login_button_not_found")
+        raise RuntimeError("Login button not found on landing page")
+
+    time.sleep(2)
+    screenshot(driver, "01_modal_open")
 
     for sel_type, sel_val in selectors_to_try:
         try:
