@@ -1,4 +1,4 @@
-import os, sys, logging
+import os, sys, logging, urllib.request
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
@@ -9,7 +9,6 @@ logger = logging.getLogger("main")
 from ajio_scraper  import run_scraper
 from process_excel import process_both
 from sync_gsheet   import sync
-from alerts        import run_alerts
 from datetime import datetime
 
 def env(key):
@@ -49,18 +48,18 @@ def main():
     except Exception as e:
         logger.exception(f"Sync failed: {e}"); sys.exit(1)
 
-    logger.info("STEP 4 — Running alerts...")
-    try:
-        run_alerts(
-            sheet_id       = sheet_id,
-            creds_json_str = creds_json,
-            email_sender   = env("EMAIL_SENDER"),
-            email_password = env("EMAIL_APP_PASSWORD"),
-            email_to_str   = env("EMAIL_TO"),
-        )
-    except Exception as e:
-        logger.exception(f"Alerts failed: {e}")
-        # ← no sys.exit here — alerts failing should NOT kill the whole run
+    logger.info("STEP 4 — Triggering Apps Script alerts...")
+    apps_script_url = os.environ.get("APPS_SCRIPT_URL", "").strip()
+    if not apps_script_url:
+        logger.warning("APPS_SCRIPT_URL not set — skipping alerts trigger")
+    else:
+        try:
+            req = urllib.request.Request(apps_script_url, method="POST", data=b"trigger")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read().decode()
+            logger.info(f"  Apps Script response: {body}")
+        except Exception as e:
+            logger.warning(f"  Apps Script trigger failed (non-fatal): {e}")
 
     logger.info("DONE ✅")
 
