@@ -48,24 +48,24 @@ def main():
     except Exception as e:
         logger.exception(f"Sync failed: {e}"); sys.exit(1)
 
-logger.info("STEP 4 — Triggering Apps Script alerts...")
-apps_script_url = os.environ.get("APPS_SCRIPT_URL", "").strip()
-if not apps_script_url:
-    logger.warning("APPS_SCRIPT_URL not set — skipping alerts trigger")
-else:
-    try:
-        import requests as req_lib
-        resp = req_lib.post(
-            apps_script_url,
-            data={"trigger": "1"},
-            allow_redirects=True,
-            timeout=60
-        )
-        logger.info(f"  Apps Script response [{resp.status_code}]: {resp.text[:200]}")
-        if resp.status_code not in (200, 302):
-            logger.warning(f"  Unexpected status: {resp.status_code}")
-    except Exception as e:
-        logger.warning(f"  Apps Script trigger failed (non-fatal): {e}")
+    logger.info("STEP 4 — Triggering Apps Script alerts...")
+    apps_script_url = os.environ.get("APPS_SCRIPT_URL", "").strip()
+    if not apps_script_url:
+        logger.warning("APPS_SCRIPT_URL not set — skipping alerts trigger")
+    else:
+        try:
+            import requests as req_lib
+            resp = req_lib.post(
+                apps_script_url,
+                data={"trigger": "1"},
+                allow_redirects=True,
+                timeout=60
+            )
+            logger.info(f"  Apps Script response [{resp.status_code}]: {resp.text[:200]}")
+            if resp.status_code not in (200, 302):
+                logger.warning(f"  Unexpected status: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"  Apps Script trigger failed (non-fatal): {e}")
 
     logger.info("DONE ✅")
 
