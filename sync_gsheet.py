@@ -106,8 +106,10 @@ def sync(df, sheet_id, creds_json_str):
     ron_to_row = {}
     for idx, row in enumerate(data_rows):
         ron = row[ron_sheet_col].strip() if ron_sheet_col < len(row) else ""
+        sku = row[2].strip() if len(row) > 2 else ""
+        key = f"{ron}|{sku}"
         if ron:
-            ron_to_row[ron] = idx + 2   # 1-based sheet row
+            ron_to_row[key] = idx + 2
 
     updates  = []
     new_rows = []
@@ -115,10 +117,12 @@ def sync(df, sheet_id, creds_json_str):
     for i in range(len(df)):
         row_s   = df.iloc[i]
         ron_val = df_value(row_s.iloc[RON_COL_IDX])
+        sku_val = df_value(row_s.iloc[2])
+        key = f"{ron_val}|{sku_val}"
         if not ron_val:
             continue
-        if ron_val in ron_to_row:
-            sheet_row_num = ron_to_row[ron_val]
+        if key in ron_to_row:
+            sheet_row_num = ron_to_row[key]
             existing_data = data_rows[sheet_row_num - 2]
             full_vals = df_row_to_sheet_list(row_s, existing_data)
             updates.append((sheet_row_num, full_vals))
