@@ -144,7 +144,14 @@ def sync(df, sheet_id, creds_json_str):
             row_data += ["", "", ""]
             row_data += [df_value(row_s.iloc[j]) for j in range(9, 12)]
             append_data.append(row_data)
-        ws.append_rows(append_data, value_input_option="USER_ENTERED")
+        last_real_row = 1
+        for idx, row in enumerate(existing):
+            if idx == 0:
+                continue
+            if _is_real_row(row):
+                last_real_row = idx + 1
+        next_row = last_real_row + 1
+        ws.update(f"A{next_row}", append_data, value_input_option="USER_ENTERED")
 
     sort_sheet(ws)
     logger.info("Sync complete ✅")
