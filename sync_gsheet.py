@@ -75,7 +75,11 @@ def sync(df, sheet_id, creds_json_str):
     existing = ws.get_all_values()
 
     # ── Empty sheet: first-time write ────────────────────────────────────────
-    if not existing:
+    def _is_real_row(row):
+        return any(v.strip() and v.strip().lower() != "select" for v in row)
+
+    real_data_rows = [r for r in existing[1:] if _is_real_row(r)]
+    if len(existing) <= 1 or len(real_data_rows) == 0:
         header = list(df.columns)
         full_header = header[:9] + ["Actual Delivered Date", "Quality", "Notes"] + header[9:]
         rows = []
