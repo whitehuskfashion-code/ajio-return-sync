@@ -151,6 +151,9 @@ def sync(df, sheet_id, creds_json_str):
             if _is_real_row(row):
                 last_real_row = idx + 1
         next_row = last_real_row + 1
+        required_rows = next_row + len(append_data) - 1
+        if required_rows > ws.row_count:
+            ws.add_rows(required_rows - ws.row_count + 100)
         ws.update(f"A{next_row}", append_data, value_input_option="USER_ENTERED")
 
     sort_sheet(ws)
