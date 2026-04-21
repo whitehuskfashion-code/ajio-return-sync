@@ -5,6 +5,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 
@@ -248,6 +249,27 @@ def wait_for_download(download_dir, before, timeout=180):
         done = [f for f in new if f.endswith(".xlsx") and not f.endswith(".crdownload")]
         if done: return os.path.join(download_dir, done[0])
     raise TimeoutError("Download timed out")
+    
+def dismiss_dialog_if_present(driver, timeout=5):
+    """Click OK on AJIO Announcement dialog if it appears."""
+    try:
+        ok_btn = WebDriverWait(driver, timeout).until(
+            EC.element_to_be_clickable((By.XPATH,
+                "//div[contains(@class,'MuiDialog-container')]//button[normalize-space(text())='OK']"
+            ))
+        )
+        ok_btn.click()
+        logger.info("Announcement dialog dismissed (OK clicked) ✅")
+        time.sleep(1)
+    except TimeoutException:
+        logger.info("No announcement dialog found, continuing...")
+    except Exception:
+        try:
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            logger.info("Announcement dialog dismissed (ESC fallback) ✅")
+            time.sleep(1)
+        except Exception as ex:
+            logger.warning(f"Dialog dismiss failed entirely: {ex}")
 
 def download_report(driver, from_dt, to_dt, download_dir, label):
     abs_dl = os.path.abspath(download_dir)
@@ -266,6 +288,7 @@ def download_report(driver, from_dt, to_dt, download_dir, label):
 
     screenshot(driver, f"{label}_01_reports")
     screenshot(driver, f"{label}_01")
+    dismiss_dialog_if_present(driver)
     set_dropdown(driver, wait, "Report Type", "Dropship Rtv Report"); time.sleep(1)
     set_date(driver, wait, "From Date", from_dt)
     set_date(driver, wait, "To Date",   to_dt)
