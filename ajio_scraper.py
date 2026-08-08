@@ -178,6 +178,47 @@ def login(driver, username: str, password: str):
     time.sleep(3)
     screenshot(driver, "03_after_login")
     logger.info(f"Post-login URL: {driver.current_url}")
+    
+    # Handle the potential Seller Agreement page popup
+    handle_seller_agreement(driver)
+
+def handle_seller_agreement(driver):
+    """
+    Checks if a 'Seller Agreements' page has appeared.
+    If it appears, clicks 'Skip' and then 'Agree' on the confirmation modal to avoid accepting it.
+    """
+    try:
+        # Check for the Skip button with a short timeout, as this page only sometimes appears
+        wait_short = WebDriverWait(driver, 15)
+        skip_btn = wait_short.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[normalize-space(text())='Skip' or .//span[normalize-space(text())='Skip']]")
+        ))
+        
+        logger.info("Seller Agreement page detected. Attempting to skip...")
+        driver.execute_script("arguments[0].scrollIntoView(true);", skip_btn)
+        time.sleep(1)
+        driver.execute_script("arguments[0].click();", skip_btn)
+        logger.info("Clicked 'Skip' on the agreement page.")
+        
+        # Wait for the confirmation modal with 'Agree' button
+        # The prompt is: "Are you sure, you want to Skip Revised Seller Agreement TAT: 48 to 24 Hours ?"
+        agree_btn = wait_short.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[normalize-space(text())='Agree' or .//span[normalize-space(text())='Agree']]")
+        ))
+        time.sleep(1)
+        driver.execute_script("arguments[0].click();", agree_btn)
+        logger.info("Clicked 'Agree' on the skip confirmation modal.")
+        
+        time.sleep(4)
+        screenshot(driver, "03a_after_skipping_agreement")
+        logger.info(f"Post-agreement URL: {driver.current_url}")
+        
+    except TimeoutException:
+        # Expected behavior when the agreement page doesn't show up
+        logger.info("No Seller Agreement page detected, proceeding normally.")
+    except Exception as e:
+        logger.warning(f"Error while trying to handle seller agreement: {e}")
+
 
 def set_dropdown(driver, wait, label, option):
     # Try native <select>
