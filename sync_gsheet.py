@@ -119,8 +119,11 @@ def sync(df, sheet_id, creds_json_str):
         ron_val = df_value(row_s.iloc[RON_COL_IDX])
         sku_val = df_value(row_s.iloc[2])
         key = f"{ron_val}|{sku_val}"
-        if not ron_val:
+        
+        # Skip rows that are missing the Return Order Number or the SKU
+        if not ron_val or not sku_val:
             continue
+            
         if key in ron_to_row:
             sheet_row_num = ron_to_row[key]
             existing_data = data_rows[sheet_row_num - 2]
