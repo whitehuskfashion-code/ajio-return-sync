@@ -148,8 +148,8 @@ function refreshAllHighlights() {
       if (delivDate && delivDate <= wEnd && quality !== "Non Delivered 7 days") {
         colour = PURPLE;
       } 
-      // Check Orange Condition (Only if not already Purple)
-      else if (createdDt && createdDt < cutoff61 && quality !== "Non Delivered 60+ days") {
+      // Check Orange Condition (Only if H is empty)
+      else if (!delivDate && createdDt && createdDt < cutoff61 && quality !== "Non Delivered 60+ days") {
         colour = ORANGE;
       }
     }
