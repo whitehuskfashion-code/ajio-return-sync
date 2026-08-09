@@ -23,11 +23,13 @@ const TRACKER_SHEET = "AJIO_TICKETS";
 // N  Cust Return Reason     14
 // O  RETURN ORDER NUMBER    15
 const COL_SELLER_SKU       =  3;
+const COL_RETURN_QTY       =  4;
 const COL_CUST_ORDER       =  5;
 const COL_RETURN_CREATED   =  6;   // F  (was 7)
 const COL_RETURN_DELIVERED =  8;   // H  (was 9)
 const COL_RETURN_AWB       =  9;   // I  (was 6)
 const COL_ACTUAL_DELIVERED = 10;   // J  manual — Alert 2 checks this
+const COL_QUALITY          = 11;
 const COL_CARRIER          = 13;
 const COL_RETURN_ORDER_NUM = 15;
 const TOTAL_COLS           = 15;
@@ -84,6 +86,7 @@ function runAlerts(sendEmail) {
   const tracker  = readTracker(trackerWs);
 
   resolveClosedCases(mainWs, trackerWs, dataRows);  // ← ADD THIS
+  updateCancelledReturns(mainWs, dataRows);         // Auto-mark Return QTY = 0
 
   // STEP 1 — Remove highlights where ticket is already raised
   for (const ron in tracker) {
@@ -104,8 +107,10 @@ function runAlerts(sendEmail) {
     const delivDate = parseDate(row[COL_RETURN_DELIVERED - 1]);
     const actualVal = String(row[COL_ACTUAL_DELIVERED  - 1] || "").trim();
     const ron       = String(row[COL_RETURN_ORDER_NUM  - 1] || "").trim();
+    const qty       = String(row[COL_RETURN_QTY - 1] || "").trim();
 
     if (!delivDate || !ron)            continue;
+    if (qty === "0")                   continue;   // Skip if return cancelled
     if (delivDate > wEnd)              continue;   // Only skips if it's LESS than 3 days old
     if (actualVal !== "")              continue;   // already physically received
     const t = tracker[ron];
@@ -132,8 +137,10 @@ function runAlerts(sendEmail) {
     const createdDt = parseDate(row[COL_RETURN_CREATED   - 1]);
     const actualVal = String(row[COL_ACTUAL_DELIVERED    - 1] || "").trim();
     const ron       = String(row[COL_RETURN_ORDER_NUM    - 1] || "").trim();
+    const qty       = String(row[COL_RETURN_QTY - 1] || "").trim();
 
     if (!createdDt || !ron)    continue;
+    if (qty === "0")           continue;   // Skip if return cancelled
     if (createdDt >= cutoff61) continue;   // not old enough yet (< 61 days)
     if (actualVal !== "")      continue;   // already received physically
     const t = tracker[ron];
@@ -152,6 +159,22 @@ function runAlerts(sendEmail) {
   // ✅ Single source of truth for all highlights
   refreshAllHighlights();
   Logger.log("runAlerts complete ✅");
+}
+
+function updateCancelledReturns(mainWs, dataRows) {
+  const updates = [];
+  for (let i = 0; i < dataRows.length; i++) {
+    const qty = String(dataRows[i][COL_RETURN_QTY - 1] || "").trim();
+    const quality = String(dataRows[i][COL_QUALITY - 1] || "").trim();
+    if (qty === "0" && quality !== "Return Cancelled") {
+      updates.push({ row: i + 2, col: COL_QUALITY, val: "Return Cancelled" });
+      dataRows[i][COL_QUALITY - 1] = "Return Cancelled"; // update in memory so downstream skips it
+    }
+  }
+  if (updates.length > 0) {
+    updates.forEach(u => mainWs.getRange(u.row, u.col).setValue(u.val));
+    Logger.log("Marked " + updates.length + " returns as Cancelled.");
+  }
 }
 
 // ================================================================
@@ -398,10 +421,11 @@ for (let i = 0; i < allData.length; i++) {
 const row = allData[i];
 const ron = String(row[COL_RETURN_ORDER_NUM - 1] || "").trim();
 const actualVal = String(row[COL_ACTUAL_DELIVERED - 1] || "").trim();
+const qty = String(row[COL_RETURN_QTY - 1] || "").trim();
 
 let colour = null; // default: clear
 
-if (ron) {
+if (ron && qty !== "0") {
 const info = tracker[ron];
 if (info && !info.ticketDate && actualVal === "") {
 colour = (info.alertType === ALERT_DELIVERED) ? PURPLE : ORANGE;
