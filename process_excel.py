@@ -65,12 +65,13 @@ def process_single(input_path: str) -> pd.DataFrame:
 
 def combine_runs(df_a: pd.DataFrame, df_b: pd.DataFrame) -> pd.DataFrame:
     combined     = pd.concat([df_b, df_a], ignore_index=True)
+    sku_col      = combined.columns[2]    # SKU
     ron_col      = combined.columns[11]   # RETURN ORDER NUMBER  (unchanged)
     date_col     = combined.columns[5]    # Return Created Date  (was [7] = 3PL; now correctly [5])
     combined_sorted = combined.sort_values(by=date_col, ascending=True, na_position="last")
-    deduped = combined_sorted.drop_duplicates(subset=[ron_col], keep="last")
+    deduped = combined_sorted.drop_duplicates(subset=[ron_col, sku_col], keep="last")
     deduped = deduped.sort_values(by=date_col, ascending=True, na_position="last").reset_index(drop=True)
-    logger.info(f"Combined: {len(combined)} rows → {len(deduped)} unique orders")
+    logger.info(f"Combined: {len(combined)} rows → {len(deduped)} unique return items (by RON+SKU)")
     return deduped
 
 
