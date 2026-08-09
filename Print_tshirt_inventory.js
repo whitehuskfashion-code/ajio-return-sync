@@ -78,8 +78,8 @@ function processSKUsAndDecrementStock() {
       const productName = row[0]; // Column A (can be empty)
       const masterProductName = row[2]; // Column C (can be empty)
 
-      // Iterate through SKU columns (B to AZ, which is index 1 to 51)
-      for (let i = 1; i < row.length; i++) {
+      // Iterate through SKU columns (D to AZ, which is index 3 to 51)
+      for (let i = 3; i < row.length; i++) {
         const sku = row[i];
         if (sku) { // If SKU exists, store mapping info regardless of Column A/C status
           // Determine size based on column position
