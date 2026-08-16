@@ -13,6 +13,7 @@ function onOpen() {
     .createMenu('📦 Stock Tools')
     .addItem('Process SKUs & Update Stock', 'processSKUsAndDecrementStock')
     .addItem('Generate Print Order', 'generatePrintOrder')  // 👈 NEW OPTION
+    .addItem('Update Lookups & Thresholds', 'updateInventoryLookupsAndThresholds')
     .addToUi();
 }
 
@@ -403,4 +404,117 @@ function generatePrintOrder() {
   }
 
   ui.alert("✅ Print Order Generated!", "Inventory updated and orders logged in column K.", ui.ButtonSet.OK);
+}
+
+/**
+ * NEW FUNCTION:
+ * Updates PRINT_COUNT in inventory_lookup based on Mapping Sheet,
+ * and populates threshold columns based on tier_rules.
+ */
+function updateInventoryLookupsAndThresholds() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const inventorySheet = ss.getSheetByName("inventory_lookup");
+  const mappingSheet = ss.getSheetByName("Mapping Sheet");
+  const tierRulesSheet = ss.getSheetByName("tier_rules");
+
+  // Allow silent running for future time-based triggers
+  let activeUi = null;
+  try {
+    activeUi = SpreadsheetApp.getUi();
+  } catch(e) {
+    // Running headlessly (e.g., via time-driven trigger)
+  }
+
+  if (!inventorySheet || !mappingSheet || !tierRulesSheet) {
+    const errorMsg = "Could not find 'inventory_lookup', 'Mapping Sheet', or 'tier_rules'. Please check sheet names.";
+    if (activeUi) activeUi.alert("Error", errorMsg, activeUi.ButtonSet.OK);
+    else Logger.log(errorMsg);
+    return;
+  }
+
+  // --- 1. Read all required data ---
+  const mappingLastRow = Math.max(2, mappingSheet.getLastRow());
+  const mappingData = mappingSheet.getRange("C2:C" + mappingLastRow).getValues();
+  
+  const inventoryLastRow = inventorySheet.getLastRow();
+  if (inventoryLastRow < 2) return; // Nothing to process
+  const inventoryData = inventorySheet.getRange("A2:C" + inventoryLastRow).getValues();
+  
+  const tierRulesLastRow = Math.max(2, tierRulesSheet.getLastRow());
+  const tierRulesData = tierRulesSheet.getRange("A2:O" + tierRulesLastRow).getValues();
+
+  // --- 2. Calculate Print Counts from Mapping Sheet ---
+  const mappingCounts = new Map();
+  mappingData.forEach(row => {
+    let name = row[0];
+    if (name) {
+      name = String(name).trim(); // Trim spaces for consistency
+      mappingCounts.set(name, (mappingCounts.get(name) || 0) + 1);
+    }
+  });
+
+  // --- 3. Parse Tier Rules ---
+  const tierRulesMap = new Map();
+  tierRulesData.forEach(row => {
+    let category = row[0];
+    if (category) {
+      category = String(category).trim();
+      let minDesigns = Number(row[1]) || 0;
+      let thresholds = row.slice(3, 15); // Columns D through O (12 values)
+      
+      if (!tierRulesMap.has(category)) {
+        tierRulesMap.set(category, []);
+      }
+      tierRulesMap.get(category).push({ minDesigns: minDesigns, thresholds: thresholds });
+    }
+  });
+
+  // Sort tiers by minDesigns descending for each category
+  // This allows us to easily find the correct tier by finding the first one where printCount >= minDesigns
+  tierRulesMap.forEach((tiers, category) => {
+    tiers.sort((a, b) => b.minDesigns - a.minDesigns);
+  });
+
+  // --- 4. Process Inventory Lookup ---
+  const printCountsToUpdate = [];
+  const thresholdsToUpdate = [];
+  const emptyThresholds = Array(12).fill("");
+
+  inventoryData.forEach(row => {
+    let colorName = String(row[0] || "").trim(); // Column A
+    let category = String(row[2] || "").trim();  // Column C
+    
+    // Get print count
+    let printCount = mappingCounts.get(colorName) || 0;
+    printCountsToUpdate.push([printCount]);
+
+    // Get thresholds
+    let rowThresholds = emptyThresholds;
+    
+    // Fallback: If it's a readymade category (like readymade_tshirt) but not in tier_rules, 
+    // try to fallback to 'readymade_all' if it exists.
+    let searchCategory = category;
+    if (category && category.startsWith("readymade_") && !tierRulesMap.has(category) && tierRulesMap.has("readymade_all")) {
+      searchCategory = "readymade_all";
+    }
+
+    if (searchCategory && tierRulesMap.has(searchCategory)) {
+      let categoryTiers = tierRulesMap.get(searchCategory);
+      for (let i = 0; i < categoryTiers.length; i++) {
+        if (printCount >= categoryTiers[i].minDesigns) {
+          rowThresholds = categoryTiers[i].thresholds;
+          break;
+        }
+      }
+    }
+    thresholdsToUpdate.push(rowThresholds);
+  });
+
+  // --- 5. Write Data Back ---
+  // Write Print Counts to Column B
+  inventorySheet.getRange(2, 2, printCountsToUpdate.length, 1).setValues(printCountsToUpdate);
+  // Write Thresholds to Columns F through Q (12 columns)
+  inventorySheet.getRange(2, 6, thresholdsToUpdate.length, 12).setValues(thresholdsToUpdate);
+
+  Logger.log("✅ Inventory lookups and thresholds updated successfully.");
 }
