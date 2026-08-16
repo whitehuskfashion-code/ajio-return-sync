@@ -14,6 +14,7 @@ function onOpen() {
     .addItem('Process SKUs & Update Stock', 'processSKUsAndDecrementStock')
     .addItem('Generate Print Order', 'generatePrintOrder')  // 👈 NEW OPTION
     .addItem('Update Lookups & Thresholds', 'updateInventoryLookupsAndThresholds')
+    .addItem('Highlight Master Inventory', 'highlightMasterInventory')
     .addToUi();
 }
 
@@ -421,7 +422,7 @@ function updateInventoryLookupsAndThresholds() {
   let activeUi = null;
   try {
     activeUi = SpreadsheetApp.getUi();
-  } catch(e) {
+  } catch (e) {
     // Running headlessly (e.g., via time-driven trigger)
   }
 
@@ -435,11 +436,11 @@ function updateInventoryLookupsAndThresholds() {
   // --- 1. Read all required data ---
   const mappingLastRow = Math.max(2, mappingSheet.getLastRow());
   const mappingData = mappingSheet.getRange("C2:C" + mappingLastRow).getValues();
-  
+
   const inventoryLastRow = inventorySheet.getLastRow();
   if (inventoryLastRow < 2) return; // Nothing to process
   const inventoryData = inventorySheet.getRange("A2:C" + inventoryLastRow).getValues();
-  
+
   const tierRulesLastRow = Math.max(2, tierRulesSheet.getLastRow());
   const tierRulesData = tierRulesSheet.getRange("A2:O" + tierRulesLastRow).getValues();
 
@@ -461,7 +462,7 @@ function updateInventoryLookupsAndThresholds() {
       category = String(category).trim();
       let minDesigns = Number(row[1]) || 0;
       let thresholds = row.slice(3, 15); // Columns D through O (12 values)
-      
+
       if (!tierRulesMap.has(category)) {
         tierRulesMap.set(category, []);
       }
@@ -483,14 +484,14 @@ function updateInventoryLookupsAndThresholds() {
   inventoryData.forEach(row => {
     let colorName = String(row[0] || "").trim(); // Column A
     let category = String(row[2] || "").trim();  // Column C
-    
+
     // Get print count
     let printCount = mappingCounts.get(colorName) || 0;
     printCountsToUpdate.push([printCount]);
 
     // Get thresholds
     let rowThresholds = emptyThresholds;
-    
+
     // Fallback: If it's a readymade category (like readymade_tshirt) but not in tier_rules, 
     // try to fallback to 'readymade_all' if it exists.
     let searchCategory = category;
@@ -516,5 +517,110 @@ function updateInventoryLookupsAndThresholds() {
   // Write Thresholds to Columns F through Q (12 columns)
   inventorySheet.getRange(2, 6, thresholdsToUpdate.length, 12).setValues(thresholdsToUpdate);
 
+  // Trigger highlighting function so colors are always up-to-date
+  highlightMasterInventory();
+
   Logger.log("✅ Inventory lookups and thresholds updated successfully.");
+}
+
+/**
+ * NEW FUNCTION:
+ * Highlights master_inventory stock cells based on thresholds from inventory_lookup.
+ */
+function highlightMasterInventory() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const masterSheet = ss.getSheetByName("master_inventory");
+  const lookupSheet = ss.getSheetByName("inventory_lookup");
+
+  if (!masterSheet || !lookupSheet) {
+    Logger.log("Error: 'master_inventory' or 'inventory_lookup' sheet not found.");
+    return;
+  }
+
+  const masterLastRow = Math.max(2, masterSheet.getLastRow());
+  const lookupLastRow = Math.max(2, lookupSheet.getLastRow());
+
+  const masterData = masterSheet.getRange("A2:I" + masterLastRow).getValues();
+  // Get A to Q to encompass all thresholds
+  const lookupData = lookupSheet.getRange("A2:Q" + lookupLastRow).getValues();
+
+  // --- 1. Build Threshold Map ---
+  const thresholdMap = new Map();
+  lookupData.forEach(row => {
+    let product = String(row[0] || "").trim();
+    if (product) {
+      thresholdMap.set(product, {
+        s_oos: row[5], s_new: row[6],
+        m_oos: row[8], m_new: row[9],
+        l_oos: row[11], l_new: row[12],
+        xl_oos: row[14], xl_new: row[15]
+      });
+    }
+  });
+
+  // Helper to determine color based on rules
+  function getColor(stock, virtualStock, oos_th, new_order_th) {
+    if (stock === "" || stock === null) return null;
+    let stockNum = Number(stock);
+    if (isNaN(stockNum)) return null;
+    
+    let vStockNum = Number(virtualStock);
+    if (isNaN(vStockNum)) vStockNum = 0; // Treat empty/invalid virtual stock as 0
+    
+    let totalStock = stockNum + vStockNum;
+
+    // Rule 1: RED if physical <= OOS_TH
+    let oosStr = String(oos_th || "").trim();
+    if (oosStr !== "") {
+      let oos = Number(oosStr);
+      if (!isNaN(oos) && stockNum <= oos) {
+        return "#FF0000"; // Red
+      }
+    }
+
+    // Rule 2: ORANGE if (physical + virtual) <= NEW_ORDER_TH
+    let newOrderStr = String(new_order_th || "").trim();
+    if (newOrderStr !== "") {
+      let newOrder = Number(newOrderStr);
+      if (!isNaN(newOrder) && totalStock <= newOrder) {
+        return "#FFA500"; // Orange
+      }
+    }
+
+    // Rule 3: Clear otherwise
+    return null;
+  }
+
+  // --- 2. Process Master Inventory Data ---
+  const bgS = [];
+  const bgM = [];
+  const bgL = [];
+  const bgXL = [];
+
+  masterData.forEach(row => {
+    let product = String(row[0] || "").trim();
+    let thresholds = thresholdMap.get(product);
+
+    if (thresholds) {
+      bgS.push([getColor(row[1], row[2], thresholds.s_oos, thresholds.s_new)]);
+      bgM.push([getColor(row[3], row[4], thresholds.m_oos, thresholds.m_new)]);
+      bgL.push([getColor(row[5], row[6], thresholds.l_oos, thresholds.l_new)]);
+      bgXL.push([getColor(row[7], row[8], thresholds.xl_oos, thresholds.xl_new)]);
+    } else {
+      bgS.push([null]);
+      bgM.push([null]);
+      bgL.push([null]);
+      bgXL.push([null]);
+    }
+  });
+
+  // --- 3. Apply Backgrounds ---
+  if (bgS.length > 0) {
+    masterSheet.getRange(2, 2, bgS.length, 1).setBackgrounds(bgS); // S (Col B)
+    masterSheet.getRange(2, 4, bgM.length, 1).setBackgrounds(bgM); // M (Col D)
+    masterSheet.getRange(2, 6, bgL.length, 1).setBackgrounds(bgL); // L (Col F)
+    masterSheet.getRange(2, 8, bgXL.length, 1).setBackgrounds(bgXL); // XL (Col H)
+  }
+
+  Logger.log("✅ Master inventory highlighting applied.");
 }
