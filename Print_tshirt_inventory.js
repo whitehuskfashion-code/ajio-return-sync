@@ -462,12 +462,13 @@ function updateInventoryLookupsAndThresholds() {
     if (category) {
       category = String(category).trim();
       let minDesigns = Number(row[1]) || 0;
+      let alloc = row[2]; // Column C (ALLOC)
       let thresholds = row.slice(3, 15); // Columns D through O (12 values)
 
       if (!tierRulesMap.has(category)) {
         tierRulesMap.set(category, []);
       }
-      tierRulesMap.get(category).push({ minDesigns: minDesigns, thresholds: thresholds });
+      tierRulesMap.get(category).push({ minDesigns: minDesigns, alloc: alloc, thresholds: thresholds });
     }
   });
 
@@ -480,6 +481,7 @@ function updateInventoryLookupsAndThresholds() {
   // --- 4. Process Inventory Lookup ---
   const printCountsToUpdate = [];
   const thresholdsToUpdate = [];
+  const allocToUpdate = [];
   const emptyThresholds = Array(12).fill("");
 
   inventoryData.forEach(row => {
@@ -492,6 +494,7 @@ function updateInventoryLookupsAndThresholds() {
 
     // Get thresholds
     let rowThresholds = emptyThresholds;
+    let rowAlloc = "";
 
     // Fallback: If it's a readymade category (like readymade_tshirt) but not in tier_rules, 
     // try to fallback to 'readymade_all' if it exists.
@@ -505,11 +508,13 @@ function updateInventoryLookupsAndThresholds() {
       for (let i = 0; i < categoryTiers.length; i++) {
         if (printCount >= categoryTiers[i].minDesigns) {
           rowThresholds = categoryTiers[i].thresholds;
+          rowAlloc = categoryTiers[i].alloc;
           break;
         }
       }
     }
     thresholdsToUpdate.push(rowThresholds);
+    allocToUpdate.push([rowAlloc]);
   });
 
   // --- 5. Write Data Back ---
@@ -517,6 +522,8 @@ function updateInventoryLookupsAndThresholds() {
   inventorySheet.getRange(2, 2, printCountsToUpdate.length, 1).setValues(printCountsToUpdate);
   // Write Thresholds to Columns F through Q (12 columns)
   inventorySheet.getRange(2, 6, thresholdsToUpdate.length, 12).setValues(thresholdsToUpdate);
+  // Write ALLOC to Column R (Column 18)
+  inventorySheet.getRange(2, 18, allocToUpdate.length, 1).setValues(allocToUpdate);
 
   // Trigger highlighting function so colors are always up-to-date
   highlightMasterInventory();
