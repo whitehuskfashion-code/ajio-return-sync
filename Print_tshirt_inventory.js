@@ -15,6 +15,7 @@ function onOpen() {
     .addItem('Generate Print Order', 'generatePrintOrder')  // 👈 NEW OPTION
     .addItem('Update Lookups & Thresholds', 'updateInventoryLookupsAndThresholds')
     .addItem('Highlight Master Inventory', 'highlightMasterInventory')
+    .addItem('Suggest Fabric Rolls', 'generateFabricRollSuggestions')
     .addToUi();
 }
 
@@ -563,17 +564,17 @@ function highlightMasterInventory() {
     if (stock === "" || stock === null) return null;
     let stockNum = Number(stock);
     if (isNaN(stockNum)) return null;
-    
+
     let vStockNum = Number(virtualStock);
     if (isNaN(vStockNum)) vStockNum = 0; // Treat empty/invalid virtual stock as 0
-    
+
     let totalStock = stockNum + vStockNum;
 
-    // Rule 1: RED if physical <= OOS_TH
+    // Rule 1: RED if (physical + virtual) <= OOS_TH
     let oosStr = String(oos_th || "").trim();
     if (oosStr !== "") {
       let oos = Number(oosStr);
-      if (!isNaN(oos) && stockNum <= oos) {
+      if (!isNaN(oos) && totalStock <= oos) {
         return "#FF0000"; // Red
       }
     }
@@ -623,4 +624,538 @@ function highlightMasterInventory() {
   }
 
   Logger.log("✅ Master inventory highlighting applied.");
+}
+
+// ==============================================================================
+// FABRIC ROLL SUGGESTION & VIRTUAL INVENTORY SYSTEM
+// ==============================================================================
+
+/**
+ * Recalculates S_V, M_V, L_V, XL_V based on hidden JSON in active suggestion rows.
+ */
+function updateVirtualInventorySums() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const masterSheet = ss.getSheetByName("master_inventory");
+  if (!masterSheet) return;
+
+  const lastRow = Math.max(2, masterSheet.getLastRow());
+  const masterData = masterSheet.getRange(2, 1, lastRow - 1, 27).getValues();
+
+  const virtualTotals = new Map();
+
+  for (let i = 0; i < masterData.length; i++) {
+    const row = masterData[i];
+    const suggProduct = String(row[17] || "").trim(); // Col R
+    const hiddenJson = String(row[26] || "").trim(); // Col AB
+
+    if (suggProduct && hiddenJson && hiddenJson.startsWith("{")) {
+      try {
+        const pieces = JSON.parse(hiddenJson);
+        if (!virtualTotals.has(suggProduct)) {
+          virtualTotals.set(suggProduct, { S: 0, M: 0, L: 0, XL: 0 });
+        }
+        let totals = virtualTotals.get(suggProduct);
+        totals.S += (pieces.S || 0);
+        totals.M += (pieces.M || 0);
+        totals.L += (pieces.L || 0);
+        totals.XL += (pieces.XL || 0);
+      } catch (e) { }
+    }
+  }
+
+  const vUpdates = [];
+  for (let i = 0; i < masterData.length; i++) {
+    const product = String(masterData[i][0] || "").trim();
+    if (product && virtualTotals.has(product)) {
+      const t = virtualTotals.get(product);
+      vUpdates.push([t.S, t.M, t.L, t.XL]);
+    } else {
+      vUpdates.push([0, 0, 0, 0]);
+    }
+  }
+
+  if (vUpdates.length > 0) {
+    masterSheet.getRange(2, 3, vUpdates.length, 1).setValues(vUpdates.map(r => [r[0]])); // C
+    masterSheet.getRange(2, 5, vUpdates.length, 1).setValues(vUpdates.map(r => [r[1]])); // E
+    masterSheet.getRange(2, 7, vUpdates.length, 1).setValues(vUpdates.map(r => [r[2]])); // G
+    masterSheet.getRange(2, 9, vUpdates.length, 1).setValues(vUpdates.map(r => [r[3]])); // I
+  }
+}
+
+/**
+ * Helper to compute the total LOCKED virtual stock for each product
+ */
+function getLockedVirtualStock(masterData) {
+  const lockedTotals = new Map();
+  for (let i = 0; i < masterData.length; i++) {
+    let row = masterData[i];
+    let suggProduct = String(row[17] || "").trim();
+    let isLocked = (row[22] === true || row[22] === "TRUE"); // Col X
+    let hiddenJson = String(row[26] || "").trim(); // Col AB
+
+    if (suggProduct && isLocked && hiddenJson && hiddenJson.startsWith("{")) {
+      try {
+        const pieces = JSON.parse(hiddenJson);
+        if (!lockedTotals.has(suggProduct)) {
+          lockedTotals.set(suggProduct, { S: 0, M: 0, L: 0, XL: 0 });
+        }
+        let totals = lockedTotals.get(suggProduct);
+        totals.S += (pieces.S || 0);
+        totals.M += (pieces.M || 0);
+        totals.L += (pieces.L || 0);
+        totals.XL += (pieces.XL || 0);
+      } catch (e) { }
+    }
+  }
+  return lockedTotals;
+}
+
+/**
+ * Runs daily via Time-Based Trigger.
+ */
+function generateFabricRollSuggestions() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const masterSheet = ss.getSheetByName("master_inventory");
+  const lookupSheet = ss.getSheetByName("inventory_lookup");
+
+  if (!masterSheet || !lookupSheet) return;
+
+  const masterLastRow = Math.max(2, masterSheet.getLastRow());
+  const lookupLastRow = Math.max(2, lookupSheet.getLastRow());
+
+  const masterData = masterSheet.getRange(2, 1, masterLastRow - 1, 27).getValues();
+  const lookupData = lookupSheet.getRange(2, 1, lookupLastRow - 1, 17).getValues();
+
+  const lookupMap = new Map();
+  lookupData.forEach(row => {
+    let product = String(row[0] || "").trim();
+    if (product) {
+      lookupMap.set(product, {
+        fabricOrReady: String(row[3] || "").trim().toUpperCase(),
+        pcsPerRoll: Number(row[4]) || 60,
+        targetS: Number(row[7]) || 0,
+        targetM: Number(row[10]) || 0,
+        targetL: Number(row[13]) || 0,
+        targetXL: Number(row[16]) || 0,
+        oosS: row[5], newOrderS: row[6],
+        oosM: row[8], newOrderM: row[9],
+        oosL: row[11], newOrderL: row[12],
+        oosXL: row[14], newOrderXL: row[15]
+      });
+    }
+  });
+
+  const unpaidRows = new Map();
+  const unlockedRows = [];
+
+  for (let i = 0; i < masterData.length; i++) {
+    let row = masterData[i];
+    let suggProduct = String(row[17] || "").trim(); // Col R
+    let isPaid = (row[20] === true || row[20] === "TRUE"); // Col U
+    let isLocked = (row[22] === true || row[22] === "TRUE"); // Col W
+
+    if (suggProduct) {
+      if (!isPaid) {
+        unpaidRows.set(suggProduct, i);
+      }
+      if (isPaid && !isLocked) {
+        unlockedRows.push({ rowIndex: i, product: suggProduct, paidRolls: Number(row[19]) || 0 });
+      }
+    }
+  }
+
+  let firstEmptySuggestionRow = -1;
+  for (let i = 0; i < masterData.length; i++) {
+    if (String(masterData[i][17] || "").trim() === "") {
+      firstEmptySuggestionRow = i;
+      break;
+    }
+  }
+  if (firstEmptySuggestionRow === -1) firstEmptySuggestionRow = masterData.length;
+
+  const now = new Date();
+  const formattedDate = Utilities.formatDate(now, ss.getSpreadsheetTimeZone(), "dd/MM/yyyy HH:mm:ss");
+
+  // ==============================================================================
+  // STEP 1: Process Unlocked Rows First (Dynamic Ratio Recalculation)
+  // ==============================================================================
+  const lockedTotals = getLockedVirtualStock(masterData);
+  let unlockedUpdates = [];
+
+  unlockedRows.forEach(uRow => {
+    let product = uRow.product;
+    if (!lookupMap.has(product)) return;
+    const lookup = lookupMap.get(product);
+
+    let pS = 0, pM = 0, pL = 0, pXL = 0;
+    for (let m = 0; m < masterData.length; m++) {
+      if (String(masterData[m][0] || "").trim() === product) {
+        pS = isNaN(Number(masterData[m][1])) ? 0 : Number(masterData[m][1]);
+        pM = isNaN(Number(masterData[m][3])) ? 0 : Number(masterData[m][3]);
+        pL = isNaN(Number(masterData[m][5])) ? 0 : Number(masterData[m][5]);
+        pXL = isNaN(Number(masterData[m][7])) ? 0 : Number(masterData[m][7]);
+        break;
+      }
+    }
+
+    let lS = 0, lM = 0, lL = 0, lXL = 0;
+    if (lockedTotals.has(product)) {
+      const lt = lockedTotals.get(product);
+      lS = lt.S; lM = lt.M; lL = lt.L; lXL = lt.XL;
+    }
+
+    let intendedS = Math.max(0, lookup.targetS - (pS + lS));
+    let intendedM = Math.max(0, lookup.targetM - (pM + lM));
+    let intendedL = Math.max(0, lookup.targetL - (pL + lL));
+    let intendedXL = Math.max(0, lookup.targetXL - (pXL + lXL));
+
+    let ratio = calculatePerfectRatio(intendedS, intendedM, intendedL, intendedXL);
+    let totalPieces = uRow.paidRolls * lookup.pcsPerRoll;
+    let distributed = distributePieces(ratio, totalPieces);
+
+    let ratioStr = ratio.join(":");
+    let hiddenJson = JSON.stringify({ S: distributed[0], M: distributed[1], L: distributed[2], XL: distributed[3] });
+
+    unlockedUpdates.push({ row: uRow.rowIndex + 2, col: 22, val: ratioStr });
+    unlockedUpdates.push({ row: uRow.rowIndex + 2, col: 27, val: hiddenJson });
+    unlockedUpdates.push({ row: uRow.rowIndex + 2, col: 26, val: formattedDate });
+  });
+
+  if (unlockedUpdates.length > 0) {
+    unlockedUpdates.forEach(u => masterSheet.getRange(u.row, u.col).setValue(u.val));
+    // Immediately recalculate virtual inventory so the rest of the script sees fresh virtual numbers
+    updateVirtualInventorySums();
+  }
+
+  // ==============================================================================
+  // STEP 2: Suggest Rolls based on ANY breach using FRESH data
+  // ==============================================================================
+  const freshMasterData = masterSheet.getRange(2, 1, masterLastRow - 1, 27).getValues();
+  const updates = [];
+  const newCheckboxes = [];
+
+  // Identify which products already have at least one Paid row in the suggestions block
+  const productsWithPaidRows = new Set();
+  for (let i = 0; i < freshMasterData.length; i++) {
+    let suggProduct = String(freshMasterData[i][17] || "").trim(); // Col R
+    let isPaid = (freshMasterData[i][20] === true || freshMasterData[i][20] === "TRUE"); // Col U
+    if (suggProduct && isPaid) {
+      productsWithPaidRows.add(suggProduct);
+    }
+  }
+
+  for (let i = 0; i < freshMasterData.length; i++) {
+    const row = freshMasterData[i];
+    const product = String(row[0] || "").trim();
+    if (!product || !lookupMap.has(product)) continue;
+
+    const lookup = lookupMap.get(product);
+    if (lookup.fabricOrReady !== "FABRIC") continue;
+
+    let needsRolls = false;
+    let hasPaidRow = productsWithPaidRows.has(product);
+
+    // Scenario A: Emergency Trigger (Orange Breach)
+    const isBreached = (physical, virtual, new_order_th) => {
+      let p = Number(physical); if (isNaN(p)) return false;
+      let v = Number(virtual); if (isNaN(v)) v = 0;
+      let total = p + v;
+      let newStr = String(new_order_th || "").trim();
+      if (newStr !== "" && !isNaN(Number(newStr)) && total <= Number(newStr)) return true;
+      return false;
+    };
+
+    // Scenario B: Top-Up Trigger (Target - 5 buffer)
+    const isTargetBreached = (physical, virtual, target_stock) => {
+      let p = Number(physical); if (isNaN(p)) return false;
+      let v = Number(virtual); if (isNaN(v)) v = 0;
+      let total = p + v;
+      let target = Number(target_stock);
+      if (isNaN(target)) return false;
+      return total < (target - 5);
+    };
+
+    if (hasPaidRow) {
+      if (
+        isTargetBreached(row[1], row[2], lookup.targetS) ||
+        isTargetBreached(row[3], row[4], lookup.targetM) ||
+        isTargetBreached(row[5], row[6], lookup.targetL) ||
+        isTargetBreached(row[7], row[8], lookup.targetXL)
+      ) {
+        needsRolls = true;
+      }
+    } else {
+      if (
+        isBreached(row[1], row[2], lookup.newOrderS) ||
+        isBreached(row[3], row[4], lookup.newOrderM) ||
+        isBreached(row[5], row[6], lookup.newOrderL) ||
+        isBreached(row[7], row[8], lookup.newOrderXL)
+      ) {
+        needsRolls = true;
+      }
+    }
+
+    if (needsRolls) {
+      let pS = isNaN(Number(row[1])) ? 0 : Number(row[1]);
+      let pM = isNaN(Number(row[3])) ? 0 : Number(row[3]);
+      let pL = isNaN(Number(row[5])) ? 0 : Number(row[5]);
+      let pXL = isNaN(Number(row[7])) ? 0 : Number(row[7]);
+
+      let vS = isNaN(Number(row[2])) ? 0 : Number(row[2]);
+      let vM = isNaN(Number(row[4])) ? 0 : Number(row[4]);
+      let vL = isNaN(Number(row[6])) ? 0 : Number(row[6]);
+      let vXL = isNaN(Number(row[8])) ? 0 : Number(row[8]);
+
+      let intendedS = Math.max(0, lookup.targetS - (pS + vS));
+      let intendedM = Math.max(0, lookup.targetM - (pM + vM));
+      let intendedL = Math.max(0, lookup.targetL - (pL + vL));
+      let intendedXL = Math.max(0, lookup.targetXL - (pXL + vXL));
+
+      let totalIntended = intendedS + intendedM + intendedL + intendedXL;
+      let suggestedRolls = Math.ceil(totalIntended / lookup.pcsPerRoll);
+
+      if (suggestedRolls >= 1) {
+        if (unpaidRows.has(product)) {
+          let sRowIdx = unpaidRows.get(product);
+          updates.push({ row: sRowIdx + 2, col: 19, val: suggestedRolls });
+          updates.push({ row: sRowIdx + 2, col: 26, val: formattedDate });
+        } else {
+          let nRowIdx = firstEmptySuggestionRow++;
+          updates.push({ row: nRowIdx + 2, col: 18, val: product });
+          updates.push({ row: nRowIdx + 2, col: 19, val: suggestedRolls });
+          updates.push({ row: nRowIdx + 2, col: 21, val: false });
+          updates.push({ row: nRowIdx + 2, col: 23, val: false });
+          updates.push({ row: nRowIdx + 2, col: 24, val: false });
+          updates.push({ row: nRowIdx + 2, col: 25, val: formattedDate });
+          updates.push({ row: nRowIdx + 2, col: 26, val: formattedDate });
+          newCheckboxes.push(nRowIdx + 2);
+          masterSheet.getRange(nRowIdx + 2, 18, 1, 1).setBackground("black").setFontColor("white");
+        }
+      } else {
+        if (!hasPaidRow && unpaidRows.has(product)) {
+          let sRowIdx = unpaidRows.get(product);
+          masterSheet.getRange(sRowIdx + 2, 18, 1, 10).clearContent().clearDataValidations().setBackground(null);
+        }
+      }
+    } else {
+      if (!hasPaidRow && unpaidRows.has(product)) {
+        let sRowIdx = unpaidRows.get(product);
+        masterSheet.getRange(sRowIdx + 2, 18, 1, 10).clearContent().clearDataValidations().setBackground(null);
+      }
+    }
+  }
+
+  if (updates.length > 0) {
+    updates.forEach(u => masterSheet.getRange(u.row, u.col).setValue(u.val));
+  }
+
+  newCheckboxes.forEach(r => {
+    masterSheet.getRange(r, 21).insertCheckboxes();
+    masterSheet.getRange(r, 23).insertCheckboxes();
+    masterSheet.getRange(r, 24).insertCheckboxes();
+  });
+}
+
+// ==============================================================================
+// FABRIC RATIO ALGORITHMS
+// ==============================================================================
+
+function calculatePerfectRatio(intendedS, intendedM, intendedL, intendedXL) {
+  let raw = [intendedS, intendedM, intendedL, intendedXL];
+  let rawSum = raw.reduce((a, b) => a + b, 0);
+
+  if (rawSum === 0) return [0, 0, 0, 0];
+
+  let baselinePct = raw.map(v => v / rawSum);
+  let maxRaw = Math.max(...raw);
+
+  let bestScore = Infinity;
+  let bestRatio = [0, 0, 0, 0];
+
+  for (let maxTgt = 1; maxTgt <= 5; maxTgt++) {
+    let multiplier = maxTgt / maxRaw;
+    let candidate = raw.map(v => {
+      return Math.round(v * multiplier);
+    });
+
+    let candSum = candidate.reduce((a, b) => a + b, 0);
+    let candPct = candidate.map(v => v / candSum);
+
+    let error = 0;
+    for (let i = 0; i < 4; i++) {
+      error += Math.abs(baselinePct[i] - candPct[i]);
+    }
+
+    // Add 1% complexity penalty per maxTgt step
+    let score = error + (maxTgt * 0.01);
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestRatio = candidate;
+    }
+  }
+  return bestRatio;
+}
+
+function distributePieces(ratio, totalPieces) {
+  let ratioSum = ratio.reduce((a, b) => a + b, 0);
+  if (ratioSum === 0) return [0, 0, 0, 0];
+
+  let exact = ratio.map(r => (r / ratioSum) * totalPieces);
+  let floored = exact.map(Math.floor);
+  let remainders = exact.map((v, i) => ({ val: v - floored[i], idx: i }));
+
+  let currentSum = floored.reduce((a, b) => a + b, 0);
+  let needed = totalPieces - currentSum;
+
+  remainders.sort((a, b) => b.val - a.val);
+
+  for (let i = 0; i < needed; i++) {
+    floored[remainders[i].idx]++;
+  }
+
+  return floored;
+}
+
+// ==============================================================================
+// AUTOMATIC EVENT HANDLER (Triggers on checkbox click)
+// ==============================================================================
+
+function onEdit(e) {
+  if (!e || !e.range) return;
+  const sh = e.range.getSheet();
+  if (sh.getName() !== "master_inventory") return;
+
+  const col = e.range.getColumn();
+  const row = e.range.getRow();
+
+  // U(21), W(23), X(24)
+  if (![21, 23, 24].includes(col)) return;
+
+  const val = e.value;
+  if (val !== "TRUE") return;
+
+  const ss = e.source;
+  const now = new Date();
+  const formattedDate = Utilities.formatDate(now, ss.getSpreadsheetTimeZone(), "dd/MM/yyyy HH:mm:ss");
+
+  const rowData = sh.getRange(row, 18, 1, 10).getValues()[0];
+  let product = String(rowData[0] || "").trim();
+  if (!product) {
+    e.range.setValue(false);
+    return;
+  }
+
+  // U: Paid
+  if (col === 21) {
+    let paidRolls = Number(rowData[2]);
+    if (isNaN(paidRolls) || paidRolls <= 0) {
+      ss.toast("Please enter a valid number of paid rolls in column T before clicking Paid.");
+      e.range.setValue(false);
+      return;
+    }
+
+    // Automatically generate ratio
+    generateRatioForSpecificRow(ss, sh, row, product, paidRolls, formattedDate);
+
+    e.range.setBackground("#d9ead3");
+    sh.getRange(row, 26).setValue(formattedDate);
+    ss.toast("Marked as Paid & Ratio generated! Time trigger will stop suggesting rolls.");
+  }
+
+  // W: Lock Ratio
+  else if (col === 23) {
+    if (rowData[3] !== true && rowData[3] !== "TRUE") {
+      ss.toast("You must mark this as Paid (check Col U) before locking it.");
+      e.range.setValue(false);
+      return;
+    }
+    e.range.setBackground("#d9ead3");
+    sh.getRange(row, 26).setValue(formattedDate);
+    ss.toast("Ratio Locked. Time trigger will no longer change this ratio.");
+  }
+
+  // X: Remove Virtual Stock (Archive)
+  else if (col === 24) {
+    if (rowData[5] !== true && rowData[5] !== "TRUE") {
+      ss.toast("You must Lock the ratio (check Col W) before you can remove the virtual stock.");
+      e.range.setValue(false);
+      return;
+    }
+
+    e.range.setBackground("#d9ead3");
+
+    let historySheet = ss.getSheetByName("rolls_history");
+    if (!historySheet) {
+      historySheet = ss.insertSheet("rolls_history");
+      historySheet.appendRow(["Product", "Suggested Rolls", "Paid Rolls", "Paid", "Ratio", "Lock", "Remove", "Create Date", "Last Update Date", "Hidden Pieces"]);
+    }
+
+    historySheet.appendRow(rowData);
+
+    // Clear from master inventory
+    sh.getRange(row, 18, 1, 10).clearContent();
+    sh.getRange(row, 18, 1, 10).clearDataValidations();
+    sh.getRange(row, 18, 1, 10).setBackground(null);
+
+    updateVirtualInventorySums();
+    ss.toast("Virtual stock removed and row archived to rolls_history.");
+  }
+}
+
+function generateRatioForSpecificRow(ss, sh, rowNum, product, paidRolls, formattedDate) {
+  // Read Master Inventory for physical stock
+  let pS = 0, pM = 0, pL = 0, pXL = 0;
+  const mData = sh.getRange(2, 1, sh.getLastRow(), 8).getValues();
+  for (let i = 0; i < mData.length; i++) {
+    if (String(mData[i][0]).trim() === product) {
+      pS = Number(mData[i][1]) || 0;
+      pM = Number(mData[i][3]) || 0;
+      pL = Number(mData[i][5]) || 0;
+      pXL = Number(mData[i][7]) || 0;
+      break;
+    }
+  }
+
+  // Determine existing LOCKED virtual stock for this product
+  let lS = 0, lM = 0, lL = 0, lXL = 0;
+  const fullData = sh.getRange(2, 1, sh.getLastRow(), 27).getValues();
+  const lockedTotals = getLockedVirtualStock(fullData);
+  if (lockedTotals.has(product)) {
+    const lt = lockedTotals.get(product);
+    lS = lt.S; lM = lt.M; lL = lt.L; lXL = lt.XL;
+  }
+
+  // Read target stock and PCS_PER_ROLL from Lookup
+  const lSh = ss.getSheetByName("inventory_lookup");
+  const lData = lSh.getRange(2, 1, lSh.getLastRow(), 17).getValues();
+  let tS = 0, tM = 0, tL = 0, tXL = 0, pcsPerRoll = 60;
+  for (let i = 0; i < lData.length; i++) {
+    if (String(lData[i][0]).trim() === product) {
+      pcsPerRoll = Number(lData[i][4]) || 60;
+      tS = Number(lData[i][7]) || 0;
+      tM = Number(lData[i][10]) || 0;
+      tL = Number(lData[i][13]) || 0;
+      tXL = Number(lData[i][16]) || 0;
+      break;
+    }
+  }
+
+  // Intended calculation includes Locked Virtual Stock
+  let intendedS = Math.max(0, tS - (pS + lS));
+  let intendedM = Math.max(0, tM - (pM + lM));
+  let intendedL = Math.max(0, tL - (pL + lL));
+  let intendedXL = Math.max(0, tXL - (pXL + lXL));
+
+  let ratio = calculatePerfectRatio(intendedS, intendedM, intendedL, intendedXL);
+  let totalPieces = paidRolls * pcsPerRoll;
+  let distributed = distributePieces(ratio, totalPieces);
+
+  let ratioStr = ratio.join(":");
+  let hiddenJson = JSON.stringify({ S: distributed[0], M: distributed[1], L: distributed[2], XL: distributed[3] });
+
+  sh.getRange(rowNum, 22).setValue(ratioStr); // V
+  sh.getRange(rowNum, 27).setValue(hiddenJson); // AA
+
+  updateVirtualInventorySums();
 }
