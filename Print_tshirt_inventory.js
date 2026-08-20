@@ -13,8 +13,8 @@ function onOpen() {
     .createMenu('📦 Stock Tools')
     .addItem('Process SKUs & Update Stock', 'processSKUsAndDecrementStock')
     .addItem('Generate Print Order', 'generatePrintOrder')  // 👈 NEW OPTION
+    .addSeparator()
     .addItem('Update Lookups & Thresholds', 'updateInventoryLookupsAndThresholds')
-    .addItem('Highlight Master Inventory', 'highlightMasterInventory')
     .addItem('Suggest Fabric Rolls', 'generateFabricRollSuggestions')
     .addToUi();
 }
@@ -934,13 +934,13 @@ function generateFabricRollSuggestions() {
       } else {
         if (!hasPaidRow && unpaidRows.has(product)) {
           let sRowIdx = unpaidRows.get(product);
-          masterSheet.getRange(sRowIdx + 2, 18, 1, 10).clearContent().clearDataValidations().setBackground(null);
+          masterSheet.getRange(sRowIdx + 2, 17, 1, 11).clearContent().clearDataValidations().setBackground(null);
         }
       }
     } else {
       if (!hasPaidRow && unpaidRows.has(product)) {
         let sRowIdx = unpaidRows.get(product);
-        masterSheet.getRange(sRowIdx + 2, 18, 1, 10).clearContent().clearDataValidations().setBackground(null);
+        masterSheet.getRange(sRowIdx + 2, 17, 1, 11).clearContent().clearDataValidations().setBackground(null);
       }
     }
   }
@@ -954,6 +954,9 @@ function generateFabricRollSuggestions() {
     masterSheet.getRange(r, 23).insertCheckboxes();
     masterSheet.getRange(r, 24).insertCheckboxes();
   });
+
+  SpreadsheetApp.flush();
+  highlightMasterInventory();
 }
 
 // ==============================================================================
@@ -1039,8 +1042,8 @@ function onEdit(e) {
   const now = new Date();
   const formattedDate = Utilities.formatDate(now, ss.getSpreadsheetTimeZone(), "dd/MM/yyyy HH:mm:ss");
 
-  const rowData = sh.getRange(row, 18, 1, 10).getValues()[0];
-  let product = String(rowData[0] || "").trim();
+  const rowData = sh.getRange(row, 17, 1, 11).getValues()[0];
+  let product = String(rowData[1] || "").trim();
   if (!product) {
     e.range.setValue(false);
     return;
@@ -1048,7 +1051,7 @@ function onEdit(e) {
 
   // U: Paid
   if (col === 21) {
-    let paidRolls = Number(rowData[2]);
+    let paidRolls = Number(rowData[3]);
     if (isNaN(paidRolls) || paidRolls <= 0) {
       ss.toast("Please enter a valid number of paid rolls in column T before clicking Paid.");
       e.range.setValue(false);
@@ -1060,24 +1063,28 @@ function onEdit(e) {
 
     e.range.setBackground("#d9ead3");
     sh.getRange(row, 26).setValue(formattedDate);
-    ss.toast("Marked as Paid & Ratio generated! Time trigger will stop suggesting rolls.");
+    ss.toast("Action successful. Recalculating suggestions...", "Processing");
+    SpreadsheetApp.flush();
+    generateFabricRollSuggestions();
   }
 
   // W: Lock Ratio
   else if (col === 23) {
-    if (rowData[3] !== true && rowData[3] !== "TRUE") {
+    if (rowData[4] !== true && rowData[4] !== "TRUE") {
       ss.toast("You must mark this as Paid (check Col U) before locking it.");
       e.range.setValue(false);
       return;
     }
     e.range.setBackground("#d9ead3");
     sh.getRange(row, 26).setValue(formattedDate);
-    ss.toast("Ratio Locked. Time trigger will no longer change this ratio.");
+    ss.toast("Action successful. Recalculating suggestions...", "Processing");
+    SpreadsheetApp.flush();
+    generateFabricRollSuggestions();
   }
 
   // X: Remove Virtual Stock (Archive)
   else if (col === 24) {
-    if (rowData[5] !== true && rowData[5] !== "TRUE") {
+    if (rowData[6] !== true && rowData[6] !== "TRUE") {
       ss.toast("You must Lock the ratio (check Col W) before you can remove the virtual stock.");
       e.range.setValue(false);
       return;
@@ -1088,18 +1095,21 @@ function onEdit(e) {
     let historySheet = ss.getSheetByName("rolls_history");
     if (!historySheet) {
       historySheet = ss.insertSheet("rolls_history");
-      historySheet.appendRow(["Product", "Suggested Rolls", "Paid Rolls", "Paid", "Ratio", "Lock", "Remove", "Create Date", "Last Update Date", "Hidden Pieces"]);
+      historySheet.appendRow(["Paid Date", "Product", "Suggested Rolls", "Paid Rolls", "Paid", "Ratio", "Lock", "Remove", "Create Date", "Last Update Date", "Hidden Pieces"]);
     }
 
     historySheet.appendRow(rowData);
 
     // Clear from master inventory
-    sh.getRange(row, 18, 1, 10).clearContent();
-    sh.getRange(row, 18, 1, 10).clearDataValidations();
-    sh.getRange(row, 18, 1, 10).setBackground(null);
+    sh.getRange(row, 17, 1, 11).clearContent();
+    sh.getRange(row, 17, 1, 11).clearDataValidations();
+    sh.getRange(row, 17, 1, 11).setBackground(null);
 
+    SpreadsheetApp.flush();
     updateVirtualInventorySums();
-    ss.toast("Virtual stock removed and row archived to rolls_history.");
+    ss.toast("Virtual stock removed. Recalculating suggestions...", "Processing");
+    SpreadsheetApp.flush();
+    generateFabricRollSuggestions();
   }
 }
 
@@ -1157,5 +1167,6 @@ function generateRatioForSpecificRow(ss, sh, rowNum, product, paidRolls, formatt
   sh.getRange(rowNum, 22).setValue(ratioStr); // V
   sh.getRange(rowNum, 27).setValue(hiddenJson); // AA
 
+  SpreadsheetApp.flush();
   updateVirtualInventorySums();
 }
