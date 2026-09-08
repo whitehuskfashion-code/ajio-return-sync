@@ -78,13 +78,17 @@ function processSKUsAndDecrementStock() {
     const skuToMappingInfo = new Map(); // SKU -> {productName, masterProductName, size, columnIndex}
 
     mappingData.forEach(row => {
-      const productName = row[0]; // Column A (can be empty)
-      const masterProductName = row[2]; // Column C (can be empty)
+      const rawProductName = row[0]; // Column A (can be empty)
+      const rawMasterProductName = row[2]; // Column C (can be empty)
+      const productName = (rawProductName === null || rawProductName === undefined || rawProductName === "") ? "" : String(rawProductName).trim().toUpperCase();
+      const masterProductName = (rawMasterProductName === null || rawMasterProductName === undefined || rawMasterProductName === "") ? "" : String(rawMasterProductName).trim().toUpperCase();
 
       // Iterate through SKU columns (D to AZ, which is index 3 to 51)
       for (let i = 3; i < row.length; i++) {
-        const sku = row[i];
-        if (sku) { // If SKU exists, store mapping info regardless of Column A/C status
+        const rawSku = row[i];
+        if (rawSku !== null && rawSku !== undefined && rawSku !== "") {
+          const sku = String(rawSku).trim().toUpperCase();
+          if (sku) { // If SKU exists after trimming
           // Determine size based on column position
           const actualColumnIndex = i + 1;
           let size = null;
@@ -106,15 +110,18 @@ function processSKUsAndDecrementStock() {
             columnIndex: actualColumnIndex
           });
         }
+        }
       }
     });
 
     // Build product lookup maps for test sheet
     const productInfoMap = new Map();
     testData.forEach((row, index) => {
-      const productName = row[0]; // Column B
+      const rawProductName = row[0]; // Column B
       const stockCount = row[2];  // Column D
-      if (productName) {
+      if (rawProductName !== null && rawProductName !== undefined && rawProductName !== "") {
+        const productName = String(rawProductName).trim().toUpperCase();
+        if (productName) {
         if (!productInfoMap.has(productName)) {
           productInfoMap.set(productName, []);
         }
@@ -122,14 +129,17 @@ function processSKUsAndDecrementStock() {
           rowIndex: index,
           stock: stockCount
         });
+        }
       }
     });
 
     // Build master product lookup maps
     const masterProductInfoMap = new Map();
     masterInventoryData.forEach((row, index) => {
-      const masterProductName = row[0]; // Column A
-      if (masterProductName) {
+      const rawMasterProductName = row[0]; // Column A
+      if (rawMasterProductName !== null && rawMasterProductName !== undefined && rawMasterProductName !== "") {
+        const masterProductName = String(rawMasterProductName).trim().toUpperCase();
+        if (masterProductName) {
         if (!masterProductInfoMap.has(masterProductName)) {
           masterProductInfoMap.set(masterProductName, []);
         }
@@ -142,6 +152,7 @@ function processSKUsAndDecrementStock() {
             XL: row[7]  // Column H
           }
         });
+        }
       }
     });
 
@@ -152,11 +163,13 @@ function processSKUsAndDecrementStock() {
     const masterInventoryDecrements = new Map();
 
     skusToProcess.forEach((row, index) => {
-      const sku = row[0];
+      const rawSku = row[0];
       let status = "";
       let highlightColor = "#000000"; // Default black
 
-      if (sku) {
+      if (rawSku !== null && rawSku !== undefined && rawSku !== "") {
+        const sku = String(rawSku).trim().toUpperCase();
+        if (sku) {
         let originalOpStatus = "";
         let masterOpStatus = "";
 
@@ -263,6 +276,7 @@ function processSKUsAndDecrementStock() {
 
         // Combine both operation statuses
         status = originalOpStatus + " | " + masterOpStatus;
+        }
       }
       // else {
       //   status = "No SKU provided";
