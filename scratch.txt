@@ -1,0 +1,148 @@
+        const spacelessSku = cleanSpaces(cleanedSku);
+        
+        const exactlyMatchedSku = spaceInsensitiveMapping[spacelessSku];
+        
+        if (exactlyMatchedSku) {
+          rowValidSkus[exactlyMatchedSku] = (rowValidSkus[exactlyMatchedSku] || 0) + multiplier;
+        } else {
+          allValid = false;
+          // Add to invalid array (skip if empty)
+          if (cleanedSku) {
+            invalidSkus.push({ sheet: sheetName, sku: cleanedSku, date: rowDate, orderId: rowOrderId });
+          }
+        }
+      }
+      
+      if (allValid) {
+        // Only if EVERY SKU in the row is valid, we add them to the master list
+        for (let sku in rowValidSkus) {
+           validSkusToAdd[sku] = (validSkusToAdd[sku] || 0) + rowValidSkus[sku];
+        }
+        updates.push({ row: r + 2, col: syncColIdx + 1, val: "SYNCED" });
+        
+        // If this row previously had a typo (was marked INCORRECT_SKU or DATE_MISSING), clear the yellow highlight!
+        if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
+          for (let c = 0; c < allBackgrounds[r].length; c++) {
+             allBackgrounds[r][c] = "#ffffff";
+          }
+          hasBgUpdates = true;
+        }
+        stats.synced++;
+        stats.evaluated++;
+      } else {
+        // Mark as INCORRECT_SKU (will be retried next time)
+        updates.push({ row: r + 2, col: syncColIdx + 1, val: "INCORRECT_SKU" });
+        // Highlight entire row in yellow
+        for (let c = 0; c < allBackgrounds[r].length; c++) {
+           allBackgrounds[r][c] = "#ffff00";
+        }
+        hasBgUpdates = true;
+      stats.incorrectSku++;
+        stats.evaluated++;
+      }
+    }
+    
+    // Batch write SYNC_STATUS updates
+    if (updates.length > 0) {
+      updates.forEach(u => ws.getRange(u.row, u.col).setValue(u.val));
+    }
+
+    // Batch write row color updates (Extremely fast batch operation)
+    if (hasBgUpdates) {
+      rangeToUpdate.setBackgrounds(allBackgrounds);
+    }
+  }
+
+  // 3. Write Valid SKUs to rto_inventory
+  const rtoKeys = Object.keys(validSkusToAdd);
+  if (rtoKeys.length > 0) {
+    const rtoWs = masterSS.getSheetByName("rto_inventory");
+    if (!rtoWs) {
+      SpreadsheetApp.getUi().alert("Error: 'rto_inventory' tab not found in destination spreadsheet.");
+      return;
+    }
+
+    const rtoLastRow = Math.max(1, rtoWs.getLastRow());
+    const rtoData = rtoWs.getRange(1, 1, rtoLastRow, 2).getValues();
+
+    // Create a map of existing rows in RTO
+    const existingRto = {}; // { "WHF-OS-M": 5 } -> Row 5
+    for (let r = 1; r < rtoData.length; r++) {
+      const sku = String(rtoData[r][0]).trim().toUpperCase();
+      if (sku) existingRto[sku] = r + 1; // 1-indexed row
+    }
+
+    const newRowsToAppend = [];
+
+    for (let i = 0; i < rtoKeys.length; i++) {
+      const sku = rtoKeys[i];
+      const qtyToAdd = validSkusToAdd[sku];
+
+      if (existingRto[sku]) {
+        // Update existing row
+        const rowNum = existingRto[sku];
+        const currentCount = parseInt(rtoWs.getRange(rowNum, 2).getValue(), 10) || 0;
+        rtoWs.getRange(rowNum, 2).setValue(currentCount + qtyToAdd);
+      } else {
+        // Append new row
+        newRowsToAppend.push([
+          sku,
+          qtyToAdd,
+          0, // Locked
+          `=B${rtoLastRow + 1 + newRowsToAppend.length}-C${rtoLastRow + 1 + newRowsToAppend.length}` // OnHand Formula
+        ]);
+      }
+    }
+
+    // Batch append new rows
+    if (newRowsToAppend.length > 0) {
+      rtoWs.getRange(rtoLastRow + 1, 1, newRowsToAppend.length, 4).setValues(newRowsToAppend);
+    }
+  }
+
+  // 4. Send Email if there are invalid SKUs
+  if (invalidSkus.length > 0) {
+    let htmlBody = `
+      <h3>Invalid SKUs Detected During RTO Sync</h3>
+      <p>The following SKUs were marked as 'Good' condition but could not be found in the Mapping Sheet. They have <b>NOT</b> been added to the rto_inventory.</p>
+      <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; text-align: left;">
+        <tr style="background-color: #f2f2f2;">
+          <th>Sheet Source</th>
+          <th>Invalid SKU</th>
+          <th>Order ID</th>
+          <th>Row Date</th>
+        </tr>
+    `;
+
+    for (let i = 0; i < invalidSkus.length; i++) {
+      htmlBody += `
+        <tr>
+          <td>${invalidSkus[i].sheet}</td>
+          <td style="color: red; font-family: monospace;">${invalidSkus[i].sku}</td>
+          <td style="font-family: monospace;">${invalidSkus[i].orderId}</td>
+          <td>${invalidSkus[i].date}</td>
+        </tr>
+      `;
+    }
+
+    htmlBody += `</table><br><p>Please correct these entries in your spreadsheets and ensure they are added to the mapping sheet if they are valid products.</p>`;
+
+    MailApp.sendEmail({
+      to: ALERT_EMAIL,
+      subject: `🚨 Action Required: ${invalidSkus.length} Invalid RTO SKUs Found`,
+      htmlBody: htmlBody
+    });
+  }
+
+  let popupMessage = `✅ Sync Complete!\n\n` +
+    `📊 Breakdown of Newly Evaluated Rows: ${stats.evaluated}\n` +
+    `--------------------------------------------------\n` +
+    `🟢 Successfully Synced to RTO: ${stats.synced} row(s)\n` +
+    `🔴 Marked as Bad Condition: ${stats.badCondition} row(s)\n` +
+    `🟡 Invalid SKUs (Yellow): ${stats.incorrectSku} row(s)\n` +
+    `🟡 Missing Dates (Yellow): ${stats.dateMissing} row(s)\n` +
+    `⏳ Waiting on Staff/Courier: ${stats.waitAndSee} row(s)\n\n` +
+    `Total Unique SKUs Updated in Master Inventory: ${rtoKeys.length}`;
+    
+  SpreadsheetApp.getUi().alert(popupMessage);
+}

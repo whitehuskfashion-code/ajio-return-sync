@@ -8,8 +8,7 @@ const MASTER_SPREADSHEET_ID = "1GMfVnYMuXxB-3_m1kuPpBcnuKK6zO02mcg0hmPprAn4";
 
 // IMPORTANT: Replace with actual allowed emails before use.
 const ALLOWED_EMAILS = [
-  "owner@example.com", 
-  "manager@example.com"
+  "whitehuskfashion@gmail.com"
 ];
 
 function checkAuthorization() {
@@ -128,7 +127,7 @@ function replaceWeeklyStock() {
     remoteSs = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
     masterSheet = remoteSs.getSheetByName("master_inventory");
   } catch(e) {
-    ui.alert("Error", "Could not connect to remote master spreadsheet.", ui.ButtonSet.OK);
+    ui.alert("Error", "Could not connect to remote master spreadsheet. Google says: " + e.toString(), ui.ButtonSet.OK);
     return;
   }
 
@@ -155,6 +154,13 @@ function replaceWeeklyStock() {
   const reviewHighlights = []; // { idx, color }
   let updatedMasterCount = 0;
 
+  // Clear Review Sheet first
+  let revLastRow = reviewSheet.getLastRow();
+  if (revLastRow > 1) {
+    reviewSheet.getRange(2, 1, revLastRow - 1, 5).clearContent();
+    reviewSheet.getRange(2, 3, revLastRow - 1, 1).setBackground(null);
+  }
+
   activeRows.forEach(item => {
     let lowerColor = item.color.toLowerCase();
     
@@ -179,8 +185,8 @@ function replaceWeeklyStock() {
         // Exact match or ±1 Tolerance: Auto-update master
         if (diff !== 0) {
           updatedMasterData[mRowIdx][s.mColIndex] = s.counted;
-          updatedMasterCount++;
         }
+        updatedMasterCount++;
       } else if (diff > 1) {
         // Overcount (e.g. counted 5, master 2)
         reviewOutput.push([item.color, s.sizeName, s.counted, s.master, `Overcount: Found ${diff} extra`]);
@@ -208,8 +214,8 @@ function replaceWeeklyStock() {
 
   // Write Review Sheet
   if (reviewOutput.length > 0) {
-    // Append to bottom
-    let startRow = Math.max(2, reviewSheet.getLastRow() + 1);
+    // Write from top (since we cleared it)
+    let startRow = 2;
     reviewSheet.getRange(startRow, 1, reviewOutput.length, 5).setValues(reviewOutput);
     
     // Apply highlights to "Current Counted Inventory" (Column C = 3)
@@ -264,7 +270,7 @@ function updateFromReviewSheet() {
     remoteSs = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
     masterSheet = remoteSs.getSheetByName("master_inventory");
   } catch(e) {
-    ui.alert("Error", "Could not connect to remote master spreadsheet.", ui.ButtonSet.OK);
+    ui.alert("Error", "Could not connect to remote master spreadsheet. Google says: " + e.toString(), ui.ButtonSet.OK);
     return;
   }
 
@@ -303,8 +309,9 @@ function updateFromReviewSheet() {
   }
 
   // Clear Review Sheet (Data & Colors)
-  reviewSheet.getRange(2, 1, reviewSheet.getLastRow() - 1, 5).clearContent();
-  reviewSheet.getRange(2, 3, reviewSheet.getLastRow() - 1, 1).setBackground(null); // Clear background colors
+  let finalRevLastRow = reviewSheet.getLastRow();
+  reviewSheet.getRange(2, 1, finalRevLastRow - 1, 5).clearContent();
+  reviewSheet.getRange(2, 3, finalRevLastRow - 1, 1).setBackground(null); // Clear background colors
   
   SpreadsheetApp.flush();
   ui.alert("Success", `Forced ${updateCount} updates to Master Inventory.\nReview Sheet has been cleared.`, ui.ButtonSet.OK);
@@ -397,7 +404,7 @@ function manualUpdateInventory() {
     remoteSs = SpreadsheetApp.openById(MASTER_SPREADSHEET_ID);
     masterSheet = remoteSs.getSheetByName("master_inventory");
   } catch(e) {
-    ui.alert("Error", "Could not connect to remote master spreadsheet.", ui.ButtonSet.OK);
+    ui.alert("Error", "Could not connect to remote master spreadsheet. Google says: " + e.toString(), ui.ButtonSet.OK);
     return;
   }
 

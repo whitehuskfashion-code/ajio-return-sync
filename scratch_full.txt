@@ -295,10 +295,7 @@ function syncDailyReturnsToRto() {
     const rangeToUpdate = ws.getRange(2, 1, lastRow - 1, Math.max(lastCol, syncColIdx + 1));
     const allData = rangeToUpdate.getValues();
     const allBackgrounds = rangeToUpdate.getBackgrounds();
-    const syncStatusRange = ws.getRange(2, syncColIdx + 1, lastRow - 1, 1);
-    const syncStatusVals = syncStatusRange.getValues();
-    let hasSyncUpdates = false;
-    
+    const updates = []; // Array to batch update SYNC_STATUS
     let hasBgUpdates = false;
 
     for (let r = 0; r < allData.length; r++) {
@@ -331,8 +328,7 @@ function syncDailyReturnsToRto() {
       // If SKU is completely empty, it's a blank row. Reset status if it was previously an error, then skip.
       if (!rawSkuCell) {
         if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
-          syncStatusVals[r][0] = "";
-        hasSyncUpdates = true;
+          updates.push({ row: r + 2, col: syncColIdx + 1, val: "" });
           for (let c = 0; c < allBackgrounds[r].length; c++) {
              allBackgrounds[r][c] = "#ffffff";
           }
@@ -347,8 +343,7 @@ function syncDailyReturnsToRto() {
       if (conditionStr.includes("cancelled") || conditionStr.includes("non delivered")) {
         // We do nothing for now. But if it previously had an error, wipe it clean.
         if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
-          syncStatusVals[r][0] = "";
-        hasSyncUpdates = true; // Reset status
+          updates.push({ row: r + 2, col: syncColIdx + 1, val: "" }); // Reset status
           for (let c = 0; c < allBackgrounds[r].length; c++) {
              allBackgrounds[r][c] = "#ffffff"; // Reset color
           }
@@ -364,8 +359,7 @@ function syncDailyReturnsToRto() {
          if (conditionStr.includes("select")) {
             // It's just an uninspected, untouched row. Wipe errors if any, then ignore.
             if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
-              syncStatusVals[r][0] = "";
-        hasSyncUpdates = true; 
+              updates.push({ row: r + 2, col: syncColIdx + 1, val: "" }); 
               for (let c = 0; c < allBackgrounds[r].length; c++) { 
                  allBackgrounds[r][c] = "#ffffff"; 
               }
@@ -376,8 +370,7 @@ function syncDailyReturnsToRto() {
             continue;
          } else {
             // It's Good or Bad, but missing a date!
-            syncStatusVals[r][0] = "DATE_MISSING";
-        hasSyncUpdates = true;
+            updates.push({ row: r + 2, col: syncColIdx + 1, val: "DATE_MISSING" });
             for (let c = 0; c < allBackgrounds[r].length; c++) { 
                allBackgrounds[r][c] = "#ffff00"; // Yellow
             }
@@ -390,8 +383,7 @@ function syncDailyReturnsToRto() {
       
       // C) Terminal Bad Conditions (Matches "Bad", "Bad - Ticket needed", "Torn", etc.)
       if (conditionStr.includes("bad") || conditionStr.includes("torn") || conditionStr.includes("damage") || conditionStr.includes("fail") || conditionStr.includes("wrong")) {
-        syncStatusVals[r][0] = "BAD_CONDITION";
-        hasSyncUpdates = true;
+        updates.push({ row: r + 2, col: syncColIdx + 1, val: "BAD_CONDITION" });
         if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
           for (let c = 0; c < allBackgrounds[r].length; c++) {
              allBackgrounds[r][c] = "#ffffff";
@@ -446,8 +438,7 @@ function syncDailyReturnsToRto() {
         for (let sku in rowValidSkus) {
            validSkusToAdd[sku] = (validSkusToAdd[sku] || 0) + rowValidSkus[sku];
         }
-        syncStatusVals[r][0] = "SYNCED";
-        hasSyncUpdates = true;
+        updates.push({ row: r + 2, col: syncColIdx + 1, val: "SYNCED" });
         
         // If this row previously had a typo (was marked INCORRECT_SKU or DATE_MISSING), clear the yellow highlight!
         if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
@@ -460,8 +451,7 @@ function syncDailyReturnsToRto() {
         stats.evaluated++;
       } else {
         // Mark as INCORRECT_SKU (will be retried next time)
-        syncStatusVals[r][0] = "INCORRECT_SKU";
-        hasSyncUpdates = true;
+        updates.push({ row: r + 2, col: syncColIdx + 1, val: "INCORRECT_SKU" });
         // Highlight entire row in yellow
         for (let c = 0; c < allBackgrounds[r].length; c++) {
            allBackgrounds[r][c] = "#ffff00";
@@ -473,8 +463,8 @@ function syncDailyReturnsToRto() {
     }
     
     // Batch write SYNC_STATUS updates
-    if (hasSyncUpdates) {
-      syncStatusRange.setValues(syncStatusVals);
+    if (updates.length > 0) {
+      updates.forEach(u => ws.getRange(u.row, u.col).setValue(u.val));
     }
 
     // Batch write row color updates (Extremely fast batch operation)
@@ -575,6 +565,5 @@ function syncDailyReturnsToRto() {
     `⏳ Waiting on Staff/Courier: ${stats.waitAndSee} row(s)\n\n` +
     `Total Unique SKUs Updated in Master Inventory: ${rtoKeys.length}`;
     
-  // Use a non-blocking toast notification instead of a modal popup
-  ss.toast(popupMessage, "Sync Results", 15);
+  SpreadsheetApp.getUi().alert(popupMessage);
 }
