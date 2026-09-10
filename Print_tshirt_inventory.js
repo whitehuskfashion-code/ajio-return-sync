@@ -53,10 +53,11 @@ function processSKUsAndDecrementStock() {
     const mappingSheet = ss.getSheetByName("Mapping Sheet");
     const testSheet = ss.getSheetByName("test sheet");
     const masterInventorySheet = ss.getSheetByName("master_inventory");
+    const rtoInventorySheet = ss.getSheetByName("rto_inventory");
 
     // --- 1. Validate that the required sheets exist ---
-    if (!mappingSheet || !testSheet || !masterInventorySheet) {
-      ui.alert("Error", "Could not find 'Mapping Sheet', 'test sheet', or 'master_inventory'. Please make sure the sheet names are correct.", ui.ButtonSet.OK);
+    if (!mappingSheet || !testSheet || !masterInventorySheet || !rtoInventorySheet) {
+      ui.alert("Error", "Could not find 'Mapping Sheet', 'test sheet', 'master_inventory', or 'rto_inventory'. Please make sure the sheet names are correct.", ui.ButtonSet.OK);
       return;
     }
 
@@ -67,12 +68,33 @@ function processSKUsAndDecrementStock() {
     const testDataRange = testSheet.getRange("B2:J" + testSheetLastRow);
     const testData = testDataRange.getValues();
 
-    const skusToProcess = testSheet.getRange("I2:I" + testSheetLastRow).getValues();
+    const skusToProcess = testSheet.getRange("H2:I" + testSheetLastRow).getValues();
 
     const masterInventoryLastRow = masterInventorySheet.getLastRow();
     const masterInventoryData = masterInventorySheet.getRange("A2:H" + masterInventoryLastRow).getValues();
 
+    const rtoInventoryLastRow = rtoInventorySheet.getLastRow();
+    const rtoInventoryData = rtoInventoryLastRow >= 2 ? rtoInventorySheet.getRange("A2:C" + rtoInventoryLastRow).getValues() : [];
+
     // --- 3. Build comprehensive SKU lookup maps ---
+
+    // Build rto product lookup map
+    const rtoInventoryInfoMap = new Map();
+    rtoInventoryData.forEach((row, index) => {
+      const rawRtoSku = row[0]; // Column A
+      if (rawRtoSku !== null && rawRtoSku !== undefined && rawRtoSku !== "") {
+        const rtoSku = String(rawRtoSku).trim().toUpperCase();
+        if (rtoSku) {
+          if (!rtoInventoryInfoMap.has(rtoSku)) {
+            rtoInventoryInfoMap.set(rtoSku, {
+              rowIndex: index,
+              count: Number(row[1]) || 0,
+              locked: Number(row[2]) || 0
+            });
+          }
+        }
+      }
+    });
 
     // FIXED: Map ALL SKUs regardless of Column A/C status
     const skuToMappingInfo = new Map(); // SKU -> {productName, masterProductName, size, columnIndex}
@@ -159,16 +181,20 @@ function processSKUsAndDecrementStock() {
     // --- 4. Process each SKU and prepare the results ---
     const results = [];
     const statusColors = [];
+    const rtoColors = [];
     const stockUpdates = testData.map(row => [row[2]]);
     const masterInventoryDecrements = new Map();
 
     skusToProcess.forEach((row, index) => {
-      const rawSku = row[0];
+      const rawRtoSku = row[0]; // Column H
+      const rawPrintSku = row[1]; // Column I
       let status = "";
+      let rtoStatus = "";
       let highlightColor = "#000000"; // Default black
+      let rtoColor = "#000000"; // Default black for RTO
 
-      if (rawSku !== null && rawSku !== undefined && rawSku !== "") {
-        const sku = String(rawSku).trim().toUpperCase();
+      if (rawPrintSku !== null && rawPrintSku !== undefined && rawPrintSku !== "") {
+        const sku = String(rawPrintSku).trim().toUpperCase();
         if (sku) {
         let originalOpStatus = "";
         let masterOpStatus = "";
@@ -283,8 +309,38 @@ function processSKUsAndDecrementStock() {
       //   highlightColor = "#FF0000"; // Red
       // }
 
+      // --- Process RTO SKU ---
+      if (rawRtoSku !== null && rawRtoSku !== undefined && rawRtoSku !== "") {
+        const rtoSku = String(rawRtoSku).trim().toUpperCase();
+        if (rtoSku) {
+          if (!skuToMappingInfo.has(rtoSku)) {
+            rtoStatus = "RTO: ❌ (Not in Mapping Sheet)";
+            rtoColor = "#FF0000"; // Red
+          } else if (!rtoInventoryInfoMap.has(rtoSku)) {
+            rtoStatus = "RTO: ❌ (Valid SKU, but missing in rto_inventory sheet)";
+            rtoColor = "#FF0000"; // Red
+          } else {
+            const rtoEntry = rtoInventoryInfoMap.get(rtoSku);
+            if (rtoEntry.count <= 0) {
+              rtoStatus = "RTO: ⚠️ (Stock already 0, cannot decrease)";
+              rtoColor = "#FF0000"; // Red
+            } else {
+              rtoEntry.count -= 1;
+              rtoEntry.locked = Math.max(0, rtoEntry.locked - 1);
+              // Silent success: rtoStatus remains empty, rtoColor remains black
+            }
+          }
+        }
+      }
+
+      // Combine statuses for Column J
+      if (rtoStatus) {
+        status = status ? (status + " | " + rtoStatus) : rtoStatus;
+      }
+
       results.push([status]);
       statusColors.push([highlightColor]);
+      rtoColors.push([rtoColor]);
     });
 
     // --- 5. Apply master inventory decrements ---
@@ -316,6 +372,9 @@ function processSKUsAndDecrementStock() {
       statusColors.forEach((colorRow, index) => {
         statusRange.getCell(index + 1, 1).setFontColor(colorRow[0]);
       });
+      
+      // Apply RTO color highlighting to Column H
+      testSheet.getRange(2, 8, rtoColors.length, 1).setFontColors(rtoColors);
 
       // Write all updated stock counts to column D in test sheet
       testSheet.getRange(2, 4, stockUpdates.length, 1).setValues(stockUpdates);
@@ -326,6 +385,22 @@ function processSKUsAndDecrementStock() {
         masterInventorySheet.getRange(2, 4, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[1]])); // Column D
         masterInventorySheet.getRange(2, 6, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[2]])); // Column F
         masterInventorySheet.getRange(2, 8, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[3]])); // Column H
+      }
+      
+      // --- 7. Write updated RTO stock back to rto_inventory ---
+      if (rtoInventoryData.length > 0) {
+        const rtoStockUpdates = rtoInventoryData.map(row => {
+          const rawSku = row[0];
+          if (rawSku !== null && rawSku !== undefined && rawSku !== "") {
+            const sku = String(rawSku).trim().toUpperCase();
+            if (sku && rtoInventoryInfoMap.has(sku)) {
+              const entry = rtoInventoryInfoMap.get(sku);
+              return [entry.count, entry.locked];
+            }
+          }
+          return [row[1], row[2]];
+        });
+        rtoInventorySheet.getRange(2, 2, rtoStockUpdates.length, 2).setValues(rtoStockUpdates);
       }
     }
 

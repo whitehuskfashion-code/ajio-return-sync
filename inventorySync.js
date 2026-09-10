@@ -42,14 +42,18 @@ function syncMyntraInventory() {
     const mappingSheet = remoteSs.getSheetByName("Mapping Sheet");
     const masterInventorySheet = remoteSs.getSheetByName("master_inventory");
     const inventoryLookupSheet = remoteSs.getSheetByName("inventory_lookup");
+    const rtoInventorySheet = remoteSs.getSheetByName("rto_inventory");
 
-    if (!mappingSheet || !masterInventorySheet || !inventoryLookupSheet) {
+    if (!mappingSheet || !masterInventorySheet || !inventoryLookupSheet || !rtoInventorySheet) {
       throw new Error("Could not find required sheets in the remote 'Print Number and Qty' spreadsheet.");
     }
 
     const mappingData = mappingSheet.getRange(2, 1, Math.max(1, mappingSheet.getLastRow() - 1), 52).getValues();
     const masterData = masterInventorySheet.getRange(2, 1, Math.max(1, masterInventorySheet.getLastRow() - 1), 8).getValues();
     const lookupData = inventoryLookupSheet.getRange(2, 1, Math.max(1, inventoryLookupSheet.getLastRow() - 1), 18).getValues();
+    
+    // Fetch RTO data (up to Column D for On-Hand)
+    const rtoData = rtoInventorySheet.getRange(2, 1, Math.max(1, rtoInventorySheet.getLastRow() - 1), 4).getValues();
 
     // --- 2. Build Memory Maps ---
     const mappingMap = new Map(); // sku -> [ {masterProduct, size, error} ]
@@ -104,6 +108,16 @@ function syncMyntraInventory() {
           },
           ALLOC: row[17] !== "" ? Number(row[17]) : null // Column R
         });
+      }
+    });
+
+    const rtoInventoryMap = new Map(); // sku -> onHand Count
+    rtoData.forEach(row => {
+      let rawSku = String(row[0]);
+      if (rawSku && rawSku.trim() !== "") {
+        let sanitizedRtoSku = rawSku.trim().toLowerCase();
+        let onHand = Math.max(0, Number(row[3]) || 0); // Column D is index 3
+        rtoInventoryMap.set(sanitizedRtoSku, onHand);
       }
     });
 
@@ -226,6 +240,10 @@ function syncMyntraInventory() {
       } else {
         finalQty = Math.floor(physicalStock * alloc);
       }
+
+      // Add fully dedicated RTO physical stock
+      let rtoStock = rtoInventoryMap.get(sanitized) || 0;
+      finalQty += rtoStock;
 
       successArray.push([rawSku, finalQty]);
 
