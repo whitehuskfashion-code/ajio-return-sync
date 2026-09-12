@@ -50,7 +50,8 @@ function syncMyntraInventory() {
 
     const mappingData = mappingSheet.getRange(2, 1, Math.max(1, mappingSheet.getLastRow() - 1), 52).getValues();
     const masterData = masterInventorySheet.getRange(2, 1, Math.max(1, masterInventorySheet.getLastRow() - 1), 8).getValues();
-    const lookupData = inventoryLookupSheet.getRange(2, 1, Math.max(1, inventoryLookupSheet.getLastRow() - 1), 18).getValues();
+    // Expanded to 23 to capture Columns S through W (Unhealthy data)
+    const lookupData = inventoryLookupSheet.getRange(2, 1, Math.max(1, inventoryLookupSheet.getLastRow() - 1), 23).getValues();
     
     // Fetch RTO data (up to Column D for On-Hand)
     const rtoData = rtoInventorySheet.getRange(2, 1, Math.max(1, rtoInventorySheet.getLastRow() - 1), 4).getValues();
@@ -95,7 +96,7 @@ function syncMyntraInventory() {
       }
     });
 
-    const lookupMap = new Map(); // product -> { OOS_TH: {S, M, L, XL}, ALLOC }
+    const lookupMap = new Map(); // product -> { OOS_TH: {S, M, L, XL}, ALLOC, ALLOC_UNHEALTHY, UNHEALTHY_TH: {S, M, L, XL} }
     lookupData.forEach(row => {
       let product = String(row[0]).trim();
       if (product) {
@@ -106,7 +107,14 @@ function syncMyntraInventory() {
             L: row[11] !== "" ? Number(row[11]) : null, // Column L
             XL: row[14] !== "" ? Number(row[14]) : null // Column O
           },
-          ALLOC: row[17] !== "" ? Number(row[17]) : null // Column R
+          ALLOC: row[17] !== "" ? Number(row[17]) : null, // Column R
+          ALLOC_UNHEALTHY: row[18] !== "" ? Number(row[18]) : null, // Column S
+          UNHEALTHY_TH: {
+            S: row[19] !== "" ? Number(row[19]) : null,  // Column T
+            M: row[20] !== "" ? Number(row[20]) : null,  // Column U
+            L: row[21] !== "" ? Number(row[21]) : null,  // Column V
+            XL: row[22] !== "" ? Number(row[22]) : null  // Column W
+          }
         });
       }
     });
@@ -223,6 +231,8 @@ function syncMyntraInventory() {
       const lData = lookupMap.get(firstProduct);
       const oosTh = lData.OOS_TH[firstSize];
       const alloc = lData.ALLOC;
+      const unhealthyTh = lData.UNHEALTHY_TH[firstSize];
+      const allocUnhealthy = lData.ALLOC_UNHEALTHY;
 
       if (oosTh === null || isNaN(oosTh) || String(oosTh).trim() === "") {
         errorArray.push([rawSku, "Missing OOS_TH in inventory_lookup"]);
@@ -236,8 +246,13 @@ function syncMyntraInventory() {
 
       let finalQty = 0;
       if (physicalStock <= oosTh) {
-        finalQty = 0; // Out of stock threshold tripped
+        // Red Tier: Out of stock threshold tripped
+        finalQty = 0; 
+      } else if (unhealthyTh !== null && allocUnhealthy !== null && physicalStock <= unhealthyTh) {
+        // Yellow Tier: Damage Control (Unhealthy Threshold tripped)
+        finalQty = Math.floor(physicalStock * allocUnhealthy);
       } else {
+        // Green Tier: Normal healthy allocation
         finalQty = Math.floor(physicalStock * alloc);
       }
 
