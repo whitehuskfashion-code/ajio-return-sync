@@ -533,7 +533,7 @@ function updateInventoryLookupsAndThresholds() {
   const inventoryData = inventorySheet.getRange("A2:C" + inventoryLastRow).getValues();
 
   const tierRulesLastRow = Math.max(2, tierRulesSheet.getLastRow());
-  const tierRulesData = tierRulesSheet.getRange("A2:O" + tierRulesLastRow).getValues();
+  const tierRulesData = tierRulesSheet.getRange("A2:T" + tierRulesLastRow).getValues();
 
   // --- 2. Calculate Weighted Print Counts from Mapping Sheet ---
   const mappingCounts = new Map();
@@ -578,11 +578,14 @@ function updateInventoryLookupsAndThresholds() {
       let minDesigns = Number(row[1]) || 0;
       let alloc = row[2]; // Column C (ALLOC)
       let thresholds = row.slice(3, 15); // Columns D through O (12 values)
+      // Extract the 5 new columns (P, Q, R, S, T) which map to indices 15, 16, 17, 18, 19
+      // row.slice(15, 20) safely grabs exactly these 5 items, filling with undefined/"" if missing.
+      let unhealthyThresholds = row.slice(15, 20).map(val => val === undefined ? "" : val);
 
       if (!tierRulesMap.has(category)) {
         tierRulesMap.set(category, []);
       }
-      tierRulesMap.get(category).push({ minDesigns: minDesigns, alloc: alloc, thresholds: thresholds });
+      tierRulesMap.get(category).push({ minDesigns: minDesigns, alloc: alloc, thresholds: thresholds, unhealthyThresholds: unhealthyThresholds });
     }
   });
 
@@ -596,7 +599,9 @@ function updateInventoryLookupsAndThresholds() {
   const printCountsToUpdate = [];
   const thresholdsToUpdate = [];
   const allocToUpdate = [];
+  const unhealthyToUpdate = [];
   const emptyThresholds = Array(12).fill("");
+  const emptyUnhealthy = Array(5).fill("");
 
   inventoryData.forEach(row => {
     let colorName = String(row[0] || "").trim(); // Column A
@@ -609,6 +614,7 @@ function updateInventoryLookupsAndThresholds() {
     // Get thresholds
     let rowThresholds = emptyThresholds;
     let rowAlloc = "";
+    let rowUnhealthy = emptyUnhealthy;
 
     // Fallback: If it's a readymade category (like readymade_tshirt) but not in tier_rules, 
     // try to fallback to 'readymade_all' if it exists.
@@ -623,12 +629,14 @@ function updateInventoryLookupsAndThresholds() {
         if (printCount >= categoryTiers[i].minDesigns) {
           rowThresholds = categoryTiers[i].thresholds;
           rowAlloc = categoryTiers[i].alloc;
+          rowUnhealthy = categoryTiers[i].unhealthyThresholds;
           break;
         }
       }
     }
     thresholdsToUpdate.push(rowThresholds);
     allocToUpdate.push([rowAlloc]);
+    unhealthyToUpdate.push(rowUnhealthy);
   });
 
   // --- 5. Write Data Back ---
@@ -638,6 +646,8 @@ function updateInventoryLookupsAndThresholds() {
   inventorySheet.getRange(2, 6, thresholdsToUpdate.length, 12).setValues(thresholdsToUpdate);
   // Write ALLOC to Column R (Column 18)
   inventorySheet.getRange(2, 18, allocToUpdate.length, 1).setValues(allocToUpdate);
+  // Write Unhealthy Thresholds to Columns S through W (Column 19, 5 columns wide)
+  inventorySheet.getRange(2, 19, unhealthyToUpdate.length, 5).setValues(unhealthyToUpdate);
 
   // Trigger highlighting function so colors are always up-to-date
   highlightMasterInventory();
