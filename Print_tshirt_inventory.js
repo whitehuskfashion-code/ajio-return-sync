@@ -525,7 +525,8 @@ function updateInventoryLookupsAndThresholds() {
 
   // --- 1. Read all required data ---
   const mappingLastRow = Math.max(2, mappingSheet.getLastRow());
-  const mappingData = mappingSheet.getRange("C2:C" + mappingLastRow).getValues();
+  // Fetch B (Design Name + Weight) and C (Master Product Name)
+  const mappingData = mappingSheet.getRange("B2:C" + mappingLastRow).getValues();
 
   const inventoryLastRow = inventorySheet.getLastRow();
   if (inventoryLastRow < 2) return; // Nothing to process
@@ -534,14 +535,38 @@ function updateInventoryLookupsAndThresholds() {
   const tierRulesLastRow = Math.max(2, tierRulesSheet.getLastRow());
   const tierRulesData = tierRulesSheet.getRange("A2:O" + tierRulesLastRow).getValues();
 
-  // --- 2. Calculate Print Counts from Mapping Sheet ---
+  // --- 2. Calculate Weighted Print Counts from Mapping Sheet ---
   const mappingCounts = new Map();
   mappingData.forEach(row => {
-    let name = row[0];
+    let designInfo = row[0]; // Column B
+    let name = row[1];       // Column C
+    
     if (name) {
       name = String(name).trim(); // Trim spaces for consistency
-      mappingCounts.set(name, (mappingCounts.get(name) || 0) + 1);
+      
+      let weight = 1; // Default fallback
+
+      if (designInfo) {
+        let designStr = String(designInfo).trim();
+        // Regex to extract value inside brackets, e.g. [0.2] or [1]
+        let match = designStr.match(/\[(.*?)\]/);
+        
+        if (match && match[1]) {
+          let parsedWeight = parseFloat(match[1]);
+          // Fallback safely if it's not a number or is negative
+          if (!isNaN(parsedWeight) && parsedWeight >= 0) {
+            weight = parsedWeight;
+          }
+        }
+      }
+
+      mappingCounts.set(name, (mappingCounts.get(name) || 0) + weight);
     }
+  });
+
+  // Round all totals to the nearest integer (e.g., 2.2 -> 2, 2.9 -> 3)
+  mappingCounts.forEach((totalWeight, masterProduct) => {
+    mappingCounts.set(masterProduct, Math.round(totalWeight));
   });
 
   // --- 3. Parse Tier Rules ---
