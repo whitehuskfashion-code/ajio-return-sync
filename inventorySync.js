@@ -129,6 +129,89 @@ function syncMyntraInventory() {
       }
     });
 
+    // --- 2.5. Pre-compute Yellow Tier Allocations (Strict Partitioning) ---
+    const yellowPools = new Map(); // "masterProduct|size" -> { totalWeight: 0, skus: [] }
+    
+    mappingMap.forEach((mappings, sku) => {
+       mappings.forEach(m => {
+           if (!m.error) {
+               let poolKey = m.masterProduct + "|" + m.size;
+               if (!yellowPools.has(poolKey)) {
+                   yellowPools.set(poolKey, { totalWeight: 0, skus: [] });
+               }
+               yellowPools.get(poolKey).totalWeight += m.weight;
+               yellowPools.get(poolKey).skus.push({ sku: sku, weight: m.weight, alloc: 0, remainder: 0 });
+           }
+       });
+    });
+
+    const yellowAllocations = new Map(); // "sku" -> finalQty
+    
+    yellowPools.forEach((poolData, poolKey) => {
+        let parts = poolKey.split("|");
+        let masterProduct = parts[0];
+        let size = parts[1];
+        
+        let physicalStock = 0;
+        if (masterInventoryMap.has(masterProduct)) {
+            physicalStock = masterInventoryMap.get(masterProduct)[size] || 0;
+        }
+        
+        let lData = lookupMap.get(masterProduct);
+        let oosTh = 0;
+        let greenAlloc = 0;
+        
+        if (lData) {
+            if (lData.OOS_TH[size] !== null && lData.OOS_TH[size] !== "") {
+                oosTh = Number(lData.OOS_TH[size]);
+                if (isNaN(oosTh)) oosTh = 0;
+            }
+            if (lData.ALLOC !== null && lData.ALLOC !== "") {
+                let parsedAlloc = Number(lData.ALLOC);
+                if (!isNaN(parsedAlloc)) {
+                    greenAlloc = Math.floor(physicalStock * parsedAlloc);
+                }
+            }
+        }
+        
+        // Strict Partitioning Logic: Math.min(5, OOS_TH) buffer
+        let safePool = Math.max(0, physicalStock - Math.min(5, oosTh));
+        
+        if (poolData.totalWeight <= 0) {
+            // Edge Case: Division by zero prevention
+            poolData.skus.forEach(s => { yellowAllocations.set(s.sku, 0); });
+        } else {
+            let remainingPool = safePool;
+            
+            // Phase 1: Ideal Share Floor
+            poolData.skus.forEach(s => {
+                let ideal = safePool * (s.weight / poolData.totalWeight);
+                s.alloc = Math.floor(ideal);
+                s.remainder = ideal - s.alloc;
+                remainingPool -= s.alloc;
+            });
+            
+            // Phase 2: Distribute Remaining Pool by Largest Remainder
+            poolData.skus.sort((a, b) => {
+                if (b.remainder !== a.remainder) return b.remainder - a.remainder;
+                return b.weight - a.weight;
+            });
+            
+            let i = 0;
+            while (remainingPool > 0 && i < poolData.skus.length) {
+                poolData.skus[i].alloc += 1;
+                remainingPool -= 1;
+                i++;
+            }
+            
+            // Phase 3: Save final allocations bounded by Green Ceiling
+            poolData.skus.forEach(s => {
+                let finalAlloc = Math.min(s.alloc, greenAlloc);
+                yellowAllocations.set(s.sku, finalAlloc);
+            });
+        }
+    });
+
     // --- 3. Read Myntra & Ajio Input Data ---
     const myntraRawData = myntraBrandTagSheet.getRange(2, 2, Math.max(1, myntraBrandTagSheet.getLastRow() - 1), 7).getValues();
     const processedSanitized = new Set();
@@ -248,9 +331,9 @@ function syncMyntraInventory() {
       if (physicalStock <= oosTh) {
         // Red Tier: Out of stock threshold tripped
         finalQty = 0; 
-      } else if (unhealthyTh !== null && allocUnhealthy !== null && physicalStock <= unhealthyTh) {
-        // Yellow Tier: Damage Control (Unhealthy Threshold tripped)
-        finalQty = Math.floor(physicalStock * allocUnhealthy);
+      } else if (unhealthyTh !== null && physicalStock <= unhealthyTh) {
+        // Yellow Tier: Damage Control (Strict Partitioning via Hare-Niemeyer)
+        finalQty = yellowAllocations.has(sanitized) ? yellowAllocations.get(sanitized) : 0;
       } else {
         // Green Tier: Normal healthy allocation
         finalQty = Math.floor(physicalStock * alloc);
