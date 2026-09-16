@@ -21,6 +21,24 @@ function syncMyntraInventory() {
   const ui = SpreadsheetApp.getUi();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
+  function getTrueLastRow(sheet, columnToCheck) {
+    const maxRow = sheet.getLastRow();
+    if (maxRow <= 1) return maxRow;
+    const values = sheet.getRange(1, columnToCheck, maxRow, 1).getValues();
+    for (let i = values.length - 1; i >= 0; i--) {
+      if (String(values[i][0]).trim() !== "") return i + 1;
+    }
+    return 1;
+  }
+
+  function chunkedSetValues(sheet, startRow, startCol, dataArray, chunkSize = 5000) {
+    for (let i = 0; i < dataArray.length; i += chunkSize) {
+      let chunk = dataArray.slice(i, i + chunkSize);
+      sheet.getRange(startRow + i, startCol, chunk.length, chunk[0].length).setValues(chunk);
+      SpreadsheetApp.flush();
+    }
+  }
+
   const myntraBrandTagSheet = ss.getSheetByName("myntraBrandTagData");
   const myntraInventorySheet = ss.getSheetByName("myntraInventory");
   const unknownErrorsSheet = ss.getSheetByName("unkownErrors");
@@ -48,23 +66,35 @@ function syncMyntraInventory() {
       throw new Error("Could not find required sheets in the remote 'Print Number and Qty' spreadsheet.");
     }
 
-    const mappingData = mappingSheet.getRange(2, 1, Math.max(1, mappingSheet.getLastRow() - 1), 52).getValues();
-    const masterData = masterInventorySheet.getRange(2, 1, Math.max(1, masterInventorySheet.getLastRow() - 1), 8).getValues();
+    const mapLastRow = getTrueLastRow(mappingSheet, 3);
+    const mappingData = mappingSheet.getRange(2, 1, Math.max(1, mapLastRow - 1), 52).getValues();
+    const masterLastRow = getTrueLastRow(masterInventorySheet, 1);
+    const masterData = masterInventorySheet.getRange(2, 1, Math.max(1, masterLastRow - 1), 8).getValues();
     // Expanded to 23 to capture Columns S through W (Unhealthy data)
-    const lookupData = inventoryLookupSheet.getRange(2, 1, Math.max(1, inventoryLookupSheet.getLastRow() - 1), 23).getValues();
+    const lookupLastRow = getTrueLastRow(inventoryLookupSheet, 1);
+    const lookupData = inventoryLookupSheet.getRange(2, 1, Math.max(1, lookupLastRow - 1), 23).getValues();
     
     // Fetch RTO data (up to Column D for On-Hand)
-    const rtoData = rtoInventorySheet.getRange(2, 1, Math.max(1, rtoInventorySheet.getLastRow() - 1), 4).getValues();
+    const rtoLastRow = getTrueLastRow(rtoInventorySheet, 1);
+    const rtoData = rtoInventorySheet.getRange(2, 1, Math.max(1, rtoLastRow - 1), 4).getValues();
 
     // --- 2. Build Memory Maps ---
-    const mappingMap = new Map(); // sku -> [ {masterProduct, size, error} ]
+    const mappingMap = new Map(); // sku -> [ {masterProduct, size, weight, error} ]
     mappingData.forEach(row => {
+      let designName = String(row[1] || ""); // Column B
+      let weightMatch = designName.match(/\[\s*([\d.]+)\s*\]/);
+      let rowWeight = weightMatch ? parseFloat(weightMatch[1]) : 1;
       let masterProduct = String(row[2] || "").trim(); // Column C
+
+      let seenSkusInRow = new Set();
 
       for (let i = 0; i < row.length; i++) {
         let rawSku = String(row[i]);
         if (rawSku.trim() !== "") {
           let sku = rawSku.trim().toLowerCase();
+          
+          if (seenSkusInRow.has(sku)) continue;
+          seenSkusInRow.add(sku);
           
           if (!mappingMap.has(sku)) {
             mappingMap.set(sku, []);
@@ -77,7 +107,7 @@ function syncMyntraInventory() {
             // Found in size columns D onwards
             let sizeIndex = (i - 3) % 4;
             let sizeStr = ["S", "M", "L", "XL"][sizeIndex];
-            mappingMap.get(sku).push({ masterProduct: masterProduct, size: sizeStr });
+            mappingMap.get(sku).push({ masterProduct: masterProduct, size: sizeStr, weight: rowWeight });
           }
         }
       }
@@ -213,7 +243,8 @@ function syncMyntraInventory() {
     });
 
     // --- 3. Read Myntra & Ajio Input Data ---
-    const myntraRawData = myntraBrandTagSheet.getRange(2, 2, Math.max(1, myntraBrandTagSheet.getLastRow() - 1), 7).getValues();
+    const myntraLastRow = getTrueLastRow(myntraBrandTagSheet, 2);
+    const myntraRawData = myntraBrandTagSheet.getRange(2, 2, Math.max(1, myntraLastRow - 1), 7).getValues();
     const processedSanitized = new Set();
     const finalSkusToProcess = [];
 
@@ -235,7 +266,8 @@ function syncMyntraInventory() {
       }
     });
 
-    const ajioRawData = ajioInventorySheet.getRange(2, 1, Math.max(1, ajioInventorySheet.getLastRow() - 1), 2).getValues();
+    const ajioLastRow = getTrueLastRow(ajioInventorySheet, 1);
+    const ajioRawData = ajioInventorySheet.getRange(2, 1, Math.max(1, ajioLastRow - 1), 2).getValues();
     const ajioSkuMap = new Map();
     const ajioQtyArray = [];
     
@@ -383,29 +415,29 @@ function syncMyntraInventory() {
 
     // Write Myntra data
     if (successArray.length > 0) {
-      myntraInventorySheet.getRange(2, 1, successArray.length, 2).setValues(successArray);
+      chunkedSetValues(myntraInventorySheet, 2, 1, successArray);
     }
     if (errorArray.length > 0) {
-      unknownErrorsSheet.getRange(2, 1, errorArray.length, 2).setValues(errorArray);
+      chunkedSetValues(unknownErrorsSheet, 2, 1, errorArray);
     }
 
     // Bulk write updated Ajio column (if there's any data to write)
     if (ajioQtyArray.length > 0) {
-      ajioInventorySheet.getRange(2, 2, ajioQtyArray.length, 1).setValues(ajioQtyArray);
+      chunkedSetValues(ajioInventorySheet, 2, 2, ajioQtyArray);
     }
 
     // Write Missing in Ajio data with timestamps
     if (missingInAjioArray.length > 0) {
       const timestamp = new Date().toLocaleString();
       const missingWriteData = missingInAjioArray.map(sku => [sku, timestamp]);
-      myntraButNotInAjioSheet.getRange(2, 1, missingWriteData.length, 2).setValues(missingWriteData);
+      chunkedSetValues(myntraButNotInAjioSheet, 2, 1, missingWriteData);
     }
 
     // Write Untouched Ajio data with reason
     if (untouchedAjioSkus.length > 0) {
       const reason = "SKU present in ajioInventory but missing or skipped in myntraBrandTagData today.";
       const untouchedWriteData = untouchedAjioSkus.map(sku => [sku, reason]);
-      ajioButNotInMyntraSheet.getRange(2, 1, untouchedWriteData.length, 2).setValues(untouchedWriteData);
+      chunkedSetValues(ajioButNotInMyntraSheet, 2, 1, untouchedWriteData);
     }
 
     // Final completion flush and toast
