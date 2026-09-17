@@ -111,27 +111,27 @@ function processSKUsAndDecrementStock() {
         if (rawSku !== null && rawSku !== undefined && rawSku !== "") {
           const sku = String(rawSku).trim().toUpperCase();
           if (sku) { // If SKU exists after trimming
-          // Determine size based on column position
-          const actualColumnIndex = i + 1;
-          let size = null;
+            // Determine size based on column position
+            const actualColumnIndex = i + 1;
+            let size = null;
 
-          if (actualColumnIndex >= 4) { // Start checking from column D
-            const sizeIndex = (actualColumnIndex - 4) % 4;
-            switch (sizeIndex) {
-              case 0: size = 'S'; break;  // D, H, L, P, T, X, AB, AF...
-              case 1: size = 'M'; break;  // E, I, M, Q, U, Y, AC, AG...
-              case 2: size = 'L'; break;  // F, J, N, R, V, Z, AD, AH...
-              case 3: size = 'XL'; break; // G, K, O, S, W, AA, AE, AI...
+            if (actualColumnIndex >= 4) { // Start checking from column D
+              const sizeIndex = (actualColumnIndex - 4) % 4;
+              switch (sizeIndex) {
+                case 0: size = 'S'; break;  // D, H, L, P, T, X, AB, AF...
+                case 1: size = 'M'; break;  // E, I, M, Q, U, Y, AC, AG...
+                case 2: size = 'L'; break;  // F, J, N, R, V, Z, AD, AH...
+                case 3: size = 'XL'; break; // G, K, O, S, W, AA, AE, AI...
+              }
             }
-          }
 
-          skuToMappingInfo.set(sku, {
-            productName: productName || "", // Store empty string if null/undefined
-            masterProductName: masterProductName || "", // Store empty string if null/undefined
-            size: size,
-            columnIndex: actualColumnIndex
-          });
-        }
+            skuToMappingInfo.set(sku, {
+              productName: productName || "", // Store empty string if null/undefined
+              masterProductName: masterProductName || "", // Store empty string if null/undefined
+              size: size,
+              columnIndex: actualColumnIndex
+            });
+          }
         }
       }
     });
@@ -144,13 +144,13 @@ function processSKUsAndDecrementStock() {
       if (rawProductName !== null && rawProductName !== undefined && rawProductName !== "") {
         const productName = String(rawProductName).trim().toUpperCase();
         if (productName) {
-        if (!productInfoMap.has(productName)) {
-          productInfoMap.set(productName, []);
-        }
-        productInfoMap.get(productName).push({
-          rowIndex: index,
-          stock: stockCount
-        });
+          if (!productInfoMap.has(productName)) {
+            productInfoMap.set(productName, []);
+          }
+          productInfoMap.get(productName).push({
+            rowIndex: index,
+            stock: stockCount
+          });
         }
       }
     });
@@ -162,18 +162,18 @@ function processSKUsAndDecrementStock() {
       if (rawMasterProductName !== null && rawMasterProductName !== undefined && rawMasterProductName !== "") {
         const masterProductName = String(rawMasterProductName).trim().toUpperCase();
         if (masterProductName) {
-        if (!masterProductInfoMap.has(masterProductName)) {
-          masterProductInfoMap.set(masterProductName, []);
-        }
-        masterProductInfoMap.get(masterProductName).push({
-          rowIndex: index,
-          stocks: {
-            S: row[1],  // Column B
-            M: row[3],  // Column D  
-            L: row[5],  // Column F
-            XL: row[7]  // Column H
+          if (!masterProductInfoMap.has(masterProductName)) {
+            masterProductInfoMap.set(masterProductName, []);
           }
-        });
+          masterProductInfoMap.get(masterProductName).push({
+            rowIndex: index,
+            stocks: {
+              S: row[1],  // Column B
+              M: row[3],  // Column D  
+              L: row[5],  // Column F
+              XL: row[7]  // Column H
+            }
+          });
         }
       }
     });
@@ -196,112 +196,112 @@ function processSKUsAndDecrementStock() {
       if (rawPrintSku !== null && rawPrintSku !== undefined && rawPrintSku !== "") {
         const sku = String(rawPrintSku).trim().toUpperCase();
         if (sku) {
-        let originalOpStatus = "";
-        let masterOpStatus = "";
+          let originalOpStatus = "";
+          let masterOpStatus = "";
 
-        // Check if SKU exists in mapping
-        const mappingInfo = skuToMappingInfo.get(sku);
+          // Check if SKU exists in mapping
+          const mappingInfo = skuToMappingInfo.get(sku);
 
-        if (mappingInfo) {
-          const productName = mappingInfo.productName;
-          const masterProductName = mappingInfo.masterProductName;
+          if (mappingInfo) {
+            const productName = mappingInfo.productName;
+            const masterProductName = mappingInfo.masterProductName;
 
-          // --- ORIGINAL OPERATION Logic ---
-          if (productName) {
-            // Column A has value - process normally
-            const productEntries = productInfoMap.get(productName);
-            if (productEntries && productEntries.length > 0) {
-              let decrementedCount = 0;
-              const warnings = [];
-
-              productEntries.forEach(entry => {
-                const stock = stockUpdates[entry.rowIndex][0];
-                if (typeof stock === 'number') {
-                  stockUpdates[entry.rowIndex][0] = stock - 1;
-                  decrementedCount++;
-                } else {
-                  warnings.push(`${productName} (row ${entry.rowIndex + 2}): typeof stock != 'number'`);
-                }
-              });
-
-              if (decrementedCount > 0) {
-                originalOpStatus = `Print: ✅ (${decrementedCount} decremented)`;
-                if (warnings.length) {
-                  originalOpStatus += `; Warnings: ${warnings.join('; ')}`;
-                }
-              } else {
-                originalOpStatus = `Print: ❌ (${warnings.join('; ')})`;
-                highlightColor = "#FF0000"; // Red
-              }
-            } else {
-              originalOpStatus = `Print: ❌ (${productName}: not in test sheet)`;
-              highlightColor = "#FF0000"; // Red
-            }
-          } else {
-            // Column A is empty - no print linked
-            originalOpStatus = "Print: No Print linked❌";
-          }
-
-          // --- MASTER OPERATION Logic ---
-          if (masterProductName) {
-            // Column C has value - process master inventory
-            const size = mappingInfo.size;
-            if (!size) {
-              masterOpStatus = `Plain/Ready Merch: ❌ (Size not determined for column ${mappingInfo.columnIndex})`;
-              highlightColor = "#FF0000"; // Red
-            } else {
-              const masterEntries = masterProductInfoMap.get(masterProductName);
-              if (masterEntries && masterEntries.length > 0) {
-                // Track this decrement
-                if (!masterInventoryDecrements.has(masterProductName)) {
-                  masterInventoryDecrements.set(masterProductName, { S: 0, M: 0, L: 0, XL: 0 });
-                }
-                masterInventoryDecrements.get(masterProductName)[size]++;
-
-                masterOpStatus = "Plain/Ready Merch: ✅ (1 decremented)";
-              } else {
-                masterOpStatus = `Plain/Ready Merch: ❌ (${masterProductName}: not in master_inventory)`;
-                highlightColor = "#FF0000"; // Red
-              }
-            }
-          } else {
-            // Column C is empty
+            // --- ORIGINAL OPERATION Logic ---
             if (productName) {
-              // Column A has value but Column C is empty
-              masterOpStatus = "Plain/Ready Merch: Product: Please link with master_inventory Column C";
-              highlightColor = "#007BFF"; // Blue
+              // Column A has value - process normally
+              const productEntries = productInfoMap.get(productName);
+              if (productEntries && productEntries.length > 0) {
+                let decrementedCount = 0;
+                const warnings = [];
+
+                productEntries.forEach(entry => {
+                  const stock = stockUpdates[entry.rowIndex][0];
+                  if (typeof stock === 'number') {
+                    stockUpdates[entry.rowIndex][0] = stock - 1;
+                    decrementedCount++;
+                  } else {
+                    warnings.push(`${productName} (row ${entry.rowIndex + 2}): typeof stock != 'number'`);
+                  }
+                });
+
+                if (decrementedCount > 0) {
+                  originalOpStatus = `Print: ✅ (${decrementedCount} decremented)`;
+                  if (warnings.length) {
+                    originalOpStatus += `; Warnings: ${warnings.join('; ')}`;
+                  }
+                } else {
+                  originalOpStatus = `Print: ❌ (${warnings.join('; ')})`;
+                  highlightColor = "#FF0000"; // Red
+                }
+              } else {
+                originalOpStatus = `Print: ❌ (${productName}: not in test sheet)`;
+                highlightColor = "#FF0000"; // Red
+              }
             } else {
-              // Both Column A and C are empty
-              masterOpStatus = "Plain/Ready Merch: ❌ (Both columns A and C are empty)";
+              // Column A is empty - no print linked
+              originalOpStatus = "Print: No Print linked❌";
+            }
+
+            // --- MASTER OPERATION Logic ---
+            if (masterProductName) {
+              // Column C has value - process master inventory
+              const size = mappingInfo.size;
+              if (!size) {
+                masterOpStatus = `Plain/Ready Merch: ❌ (Size not determined for column ${mappingInfo.columnIndex})`;
+                highlightColor = "#FF0000"; // Red
+              } else {
+                const masterEntries = masterProductInfoMap.get(masterProductName);
+                if (masterEntries && masterEntries.length > 0) {
+                  // Track this decrement
+                  if (!masterInventoryDecrements.has(masterProductName)) {
+                    masterInventoryDecrements.set(masterProductName, { S: 0, M: 0, L: 0, XL: 0 });
+                  }
+                  masterInventoryDecrements.get(masterProductName)[size]++;
+
+                  masterOpStatus = "Plain/Ready Merch: ✅ (1 decremented)";
+                } else {
+                  masterOpStatus = `Plain/Ready Merch: ❌ (${masterProductName}: not in master_inventory)`;
+                  highlightColor = "#FF0000"; // Red
+                }
+              }
+            } else {
+              // Column C is empty
+              if (productName) {
+                // Column A has value but Column C is empty
+                masterOpStatus = "Plain/Ready Merch: Product: Please link with master_inventory Column C";
+                highlightColor = "#007BFF"; // Blue
+              } else {
+                // Both Column A and C are empty
+                masterOpStatus = "Plain/Ready Merch: ❌ (Both columns A and C are empty)";
+                highlightColor = "#FF0000"; // Red
+              }
+            }
+
+            // Determine final highlight color based on scenarios
+            if (!productName && masterProductName) {
+              // Scenario 1: Column A empty + Column C has value
+              highlightColor = "#800080"; // Purple
+            } else if (productName && masterProductName) {
+              // Scenario 2: Both columns have values - check if both operations succeeded
+              if (originalOpStatus.includes("✅") && masterOpStatus.includes("✅")) {
+                highlightColor = "#000000"; // Black (no highlighting)
+              } else {
+                highlightColor = "#FF0000"; // Red for any failures
+              }
+            } else if (productName && !masterProductName) {
+              // Scenario 3: Column A has value + Column C empty
               highlightColor = "#FF0000"; // Red
             }
-          }
 
-          // Determine final highlight color based on scenarios
-          if (!productName && masterProductName) {
-            // Scenario 1: Column A empty + Column C has value
-            highlightColor = "#800080"; // Purple
-          } else if (productName && masterProductName) {
-            // Scenario 2: Both columns have values - check if both operations succeeded
-            if (originalOpStatus.includes("✅") && masterOpStatus.includes("✅")) {
-              highlightColor = "#000000"; // Black (no highlighting)
-            } else {
-              highlightColor = "#FF0000"; // Red for any failures
-            }
-          } else if (productName && !masterProductName) {
-            // Scenario 3: Column A has value + Column C empty
+          } else {
+            // SKU not found in mapping sheet
+            originalOpStatus = "Print: ❌ (SKU not in Mapping Sheet)";
+            masterOpStatus = "Plain/Ready Merch: ❌ (SKU not in Mapping Sheet)";
             highlightColor = "#FF0000"; // Red
           }
 
-        } else {
-          // SKU not found in mapping sheet
-          originalOpStatus = "Print: ❌ (SKU not in Mapping Sheet)";
-          masterOpStatus = "Plain/Ready Merch: ❌ (SKU not in Mapping Sheet)";
-          highlightColor = "#FF0000"; // Red
-        }
-
-        // Combine both operation statuses
-        status = originalOpStatus + " | " + masterOpStatus;
+          // Combine both operation statuses
+          status = originalOpStatus + " | " + masterOpStatus;
         }
       }
       // else {
@@ -372,7 +372,7 @@ function processSKUsAndDecrementStock() {
       statusColors.forEach((colorRow, index) => {
         statusRange.getCell(index + 1, 1).setFontColor(colorRow[0]);
       });
-      
+
       // Apply RTO color highlighting to Column H
       testSheet.getRange(2, 8, rtoColors.length, 1).setFontColors(rtoColors);
 
@@ -386,7 +386,7 @@ function processSKUsAndDecrementStock() {
         masterInventorySheet.getRange(2, 6, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[2]])); // Column F
         masterInventorySheet.getRange(2, 8, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[3]])); // Column H
       }
-      
+
       // --- 7. Write updated RTO stock back to rto_inventory ---
       if (rtoInventoryData.length > 0) {
         const rtoStockUpdates = rtoInventoryData.map(row => {
@@ -540,17 +540,17 @@ function updateInventoryLookupsAndThresholds() {
   mappingData.forEach(row => {
     let designInfo = row[0]; // Column B
     let name = row[1];       // Column C
-    
+
     if (name) {
       name = String(name).trim(); // Trim spaces for consistency
-      
+
       let weight = 1; // Default fallback
 
       if (designInfo) {
         let designStr = String(designInfo).trim();
         // Regex to extract value inside brackets, e.g. [0.2] or [1]
         let match = designStr.match(/\[(.*?)\]/);
-        
+
         if (match && match[1]) {
           let parsedWeight = parseFloat(match[1]);
           // Fallback safely if it's not a number or is negative

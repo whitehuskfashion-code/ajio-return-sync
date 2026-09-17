@@ -16,7 +16,7 @@ const COL_ACTUAL_DELIVERED = 10;   // J  manual
 const COL_QUALITY = 11;   // K  manual
 const COL_CARRIER = 13;
 const COL_RETURN_ORDER_NUM = 15;
-const TOTAL_COLS = 15;
+const TOTAL_COLS = 30;
 
 const PURPLE = "#9C2BE6";   // Alert 1 — Delivered Not Received
 const ORANGE = "#FF9900";   // Alert 2 — 61+ Days No Actual Delivery
@@ -298,7 +298,7 @@ function syncDailyReturnsToRto() {
     const syncStatusRange = ws.getRange(2, syncColIdx + 1, lastRow - 1, 1);
     const syncStatusVals = syncStatusRange.getValues();
     let hasSyncUpdates = false;
-    
+
     let hasBgUpdates = false;
 
     for (let r = 0; r < allData.length; r++) {
@@ -313,7 +313,7 @@ function syncDailyReturnsToRto() {
 
       // Extract SKUs (handling comma separated strings)
       const rawSkuCell = String(row[skuColIdx] || "").trim();
-      
+
       // Check if Date is filled
       let hasDate = false;
       let rowDate = "No Date Provided";
@@ -332,69 +332,73 @@ function syncDailyReturnsToRto() {
       if (!rawSkuCell) {
         if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
           syncStatusVals[r][0] = "";
-        hasSyncUpdates = true;
+          hasSyncUpdates = true;
           for (let c = 0; c < allBackgrounds[r].length; c++) {
-             allBackgrounds[r][c] = "#ffffff";
+            allBackgrounds[r][c] = null;
           }
           hasBgUpdates = true;
         }
         continue;
       }
-      
-      const conditionStr = String(row[conditionColIdx] || "").trim().toLowerCase();
-      
+
+      let conditionStr = String(row[conditionColIdx] || "").trim().toLowerCase();
+
+      if (conditionStr === "" && sheetName === 'AJIO_RETURN') {
+        conditionStr = "select";
+      }
+
       // A) Wait and See Conditions (Matches "Return Cancelled", "Non Delivered")
       if (conditionStr.includes("cancelled") || conditionStr.includes("non delivered")) {
         // We do nothing for now. But if it previously had an error, wipe it clean.
         if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
           syncStatusVals[r][0] = "";
-        hasSyncUpdates = true; // Reset status
+          hasSyncUpdates = true; // Reset status
           for (let c = 0; c < allBackgrounds[r].length; c++) {
-             allBackgrounds[r][c] = "#ffffff"; // Reset color
+            allBackgrounds[r][c] = null; // Reset color
           }
           hasBgUpdates = true;
-        stats.waitAndSee++;
+          stats.waitAndSee++;
           stats.evaluated++;
         }
         continue;
       }
-      
+
       // B) Date Check for everything else EXCEPT "Select"
       if (!hasDate) {
-         if (conditionStr.includes("select")) {
-            // It's just an uninspected, untouched row. Wipe errors if any, then ignore.
-            if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
-              syncStatusVals[r][0] = "";
-        hasSyncUpdates = true; 
-              for (let c = 0; c < allBackgrounds[r].length; c++) { 
-                 allBackgrounds[r][c] = "#ffffff"; 
-              }
-              hasBgUpdates = true;
-            stats.waitAndSee++;
-              stats.evaluated++;
-            }
-            continue;
-         } else {
-            // It's Good or Bad, but missing a date!
-            syncStatusVals[r][0] = "DATE_MISSING";
-        hasSyncUpdates = true;
-            for (let c = 0; c < allBackgrounds[r].length; c++) { 
-               allBackgrounds[r][c] = "#ffff00"; // Yellow
+        if (conditionStr.includes("select")) {
+          // It's just an uninspected, untouched row. Wipe errors if any, then ignore.
+          if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
+            syncStatusVals[r][0] = "";
+            hasSyncUpdates = true;
+            for (let c = 0; c < allBackgrounds[r].length; c++) {
+              allBackgrounds[r][c] = null;
             }
             hasBgUpdates = true;
-            stats.dateMissing++;
+            stats.waitAndSee++;
             stats.evaluated++;
-            continue;
-         }
+          }
+          continue;
+        } else {
+          // It's Good or Bad, but missing a date!
+          syncStatusVals[r][0] = "DATE_MISSING";
+          hasSyncUpdates = true;
+          for (let c = 0; c < allBackgrounds[r].length; c++) {
+            allBackgrounds[r][c] = "#ffff00"; // Yellow
+          }
+          hasBgUpdates = true;
+          stats.dateMissing++;
+          stats.evaluated++;
+          continue;
+        }
       }
-      
+
       // C) Terminal Bad Conditions (Matches "Bad", "Bad - Ticket needed", "Torn", etc.)
       if (conditionStr.includes("bad") || conditionStr.includes("torn") || conditionStr.includes("damage") || conditionStr.includes("fail") || conditionStr.includes("wrong")) {
         syncStatusVals[r][0] = "BAD_CONDITION";
         hasSyncUpdates = true;
         if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
           for (let c = 0; c < allBackgrounds[r].length; c++) {
-             allBackgrounds[r][c] = "#ffffff";
+            allBackgrounds[r][c] = null;
           }
           hasBgUpdates = true;
         }
@@ -402,10 +406,10 @@ function syncDailyReturnsToRto() {
         stats.evaluated++;
         continue;
       }
-      
+
       // D) Process as Good
       let skuList = rawSkuCell.split(',').map(s => cleanSku(s)).filter(s => s.length > 0);
-      
+
       // Handle AJIO QTY Logic
       let multiplier = 1;
       if (sheetName === 'AJIO_RETURN' && qtyColIdx !== -1) {
@@ -413,7 +417,7 @@ function syncDailyReturnsToRto() {
         if (isNaN(qtyVal) || qtyVal <= 0) continue; // Skip if 0 or invalid QTY
         multiplier = qtyVal;
       }
-      
+
       // Get Order ID for email reporting
       let rowOrderId = "N/A";
       if (orderIdColIdx !== -1 && row[orderIdColIdx]) {
@@ -422,14 +426,14 @@ function syncDailyReturnsToRto() {
 
       let allValid = true;
       let rowValidSkus = {}; // Temporary holding area for this row's valid SKUs
-      
+
       // Validate each SKU in the cell
       for (let i = 0; i < skuList.length; i++) {
         const cleanedSku = skuList[i];
         const spacelessSku = cleanSpaces(cleanedSku);
-        
+
         const exactlyMatchedSku = spaceInsensitiveMapping[spacelessSku];
-        
+
         if (exactlyMatchedSku) {
           rowValidSkus[exactlyMatchedSku] = (rowValidSkus[exactlyMatchedSku] || 0) + multiplier;
         } else {
@@ -440,19 +444,19 @@ function syncDailyReturnsToRto() {
           }
         }
       }
-      
+
       if (allValid) {
         // Only if EVERY SKU in the row is valid, we add them to the master list
         for (let sku in rowValidSkus) {
-           validSkusToAdd[sku] = (validSkusToAdd[sku] || 0) + rowValidSkus[sku];
+          validSkusToAdd[sku] = (validSkusToAdd[sku] || 0) + rowValidSkus[sku];
         }
         syncStatusVals[r][0] = "SYNCED";
         hasSyncUpdates = true;
-        
+
         // If this row previously had a typo (was marked INCORRECT_SKU or DATE_MISSING), clear the yellow highlight!
         if (syncStatus === "INCORRECT_SKU" || syncStatus === "DATE_MISSING") {
           for (let c = 0; c < allBackgrounds[r].length; c++) {
-             allBackgrounds[r][c] = "#ffffff";
+            allBackgrounds[r][c] = null;
           }
           hasBgUpdates = true;
         }
@@ -464,14 +468,14 @@ function syncDailyReturnsToRto() {
         hasSyncUpdates = true;
         // Highlight entire row in yellow
         for (let c = 0; c < allBackgrounds[r].length; c++) {
-           allBackgrounds[r][c] = "#ffff00";
+          allBackgrounds[r][c] = "#ffff00";
         }
         hasBgUpdates = true;
-      stats.incorrectSku++;
+        stats.incorrectSku++;
         stats.evaluated++;
       }
     }
-    
+
     // Batch write SYNC_STATUS updates
     if (hasSyncUpdates) {
       syncStatusRange.setValues(syncStatusVals);
@@ -574,7 +578,7 @@ function syncDailyReturnsToRto() {
     `🟡 Missing Dates (Yellow): ${stats.dateMissing} row(s)\n` +
     `⏳ Waiting on Staff/Courier: ${stats.waitAndSee} row(s)\n\n` +
     `Total Unique SKUs Updated in Master Inventory: ${rtoKeys.length}`;
-    
+
   // Use a non-blocking toast notification instead of a modal popup
   ss.toast(popupMessage, "Sync Results", 15);
 }
