@@ -14,8 +14,11 @@ function onOpen() {
     .addItem('Process SKUs & Update Stock', 'processSKUsAndDecrementStock')
     .addItem('Generate Print Order', 'generatePrintOrder')  // 👈 NEW OPTION
     .addSeparator()
+    .addItem('Clean Zero RTO Stock', 'cleanZeroRtoStock')
     .addItem('Update Lookups & Thresholds', 'updateInventoryLookupsAndThresholds')
     .addItem('Suggest Fabric Rolls', 'generateFabricRollSuggestions')
+    .addSeparator()
+    .addItem('Update Weight', 'updateDynamicWeights')
     .addToUi();
 }
 
@@ -728,30 +731,48 @@ function highlightMasterInventory() {
   const bgM = [];
   const bgL = [];
   const bgXL = [];
+  const colLUpdates = []; // To track if >= 2 sizes are Red
 
   masterData.forEach(row => {
     let product = String(row[0] || "").trim();
     let thresholds = thresholdMap.get(product);
 
     if (thresholds) {
-      bgS.push([getColor(row[1], row[2], thresholds.s_oos, thresholds.s_new)]);
-      bgM.push([getColor(row[3], row[4], thresholds.m_oos, thresholds.m_new)]);
-      bgL.push([getColor(row[5], row[6], thresholds.l_oos, thresholds.l_new)]);
-      bgXL.push([getColor(row[7], row[8], thresholds.xl_oos, thresholds.xl_new)]);
+      let colorS = getColor(row[1], row[2], thresholds.s_oos, thresholds.s_new);
+      let colorM = getColor(row[3], row[4], thresholds.m_oos, thresholds.m_new);
+      let colorL = getColor(row[5], row[6], thresholds.l_oos, thresholds.l_new);
+      let colorXL = getColor(row[7], row[8], thresholds.xl_oos, thresholds.xl_new);
+
+      bgS.push([colorS]);
+      bgM.push([colorM]);
+      bgL.push([colorL]);
+      bgXL.push([colorXL]);
+
+      // Count how many sizes are RED
+      let redCount = 0;
+      if (colorS === "#FF0000") redCount++;
+      if (colorM === "#FF0000") redCount++;
+      if (colorL === "#FF0000") redCount++;
+      if (colorXL === "#FF0000") redCount++;
+      
+      // Update Column L flag
+      colLUpdates.push([redCount >= 2 ? "Yes" : "No"]);
     } else {
       bgS.push([null]);
       bgM.push([null]);
       bgL.push([null]);
       bgXL.push([null]);
+      colLUpdates.push([product ? "No" : ""]); // If empty row, leave blank
     }
   });
 
-  // --- 3. Apply Backgrounds ---
+  // --- 3. Apply Backgrounds and Column L ---
   if (bgS.length > 0) {
     masterSheet.getRange(2, 2, bgS.length, 1).setBackgrounds(bgS); // S (Col B)
     masterSheet.getRange(2, 4, bgM.length, 1).setBackgrounds(bgM); // M (Col D)
     masterSheet.getRange(2, 6, bgL.length, 1).setBackgrounds(bgL); // L (Col F)
     masterSheet.getRange(2, 8, bgXL.length, 1).setBackgrounds(bgXL); // XL (Col H)
+    masterSheet.getRange(2, 12, colLUpdates.length, 1).setValues(colLUpdates); // Col L Update
   }
 
   Logger.log("✅ Master inventory highlighting applied.");
@@ -1300,4 +1321,455 @@ function generateRatioForSpecificRow(ss, sh, rowNum, product, paidRolls, formatt
 
   SpreadsheetApp.flush();
   updateVirtualInventorySums();
+}
+
+/**
+ * Cleans up the rto_inventory sheet by removing rows where the OnHand stock is 0.
+ * Uses a bulk read/write method to ensure no empty rows are left behind.
+ */
+function cleanZeroRtoStock() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rtoSheet = ss.getSheetByName("rto_inventory");
+
+  if (!rtoSheet) {
+    //ui.alert("Error", "Could not find 'rto_inventory' sheet.", ui.ButtonSet.OK);
+    return;
+  }
+
+  const lastRow = rtoSheet.getLastRow();
+  if (lastRow <= 1) {
+    //ui.alert("Notice", "The rto_inventory sheet is already empty.", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Read all data (excluding headers)
+  const data = rtoSheet.getRange(2, 1, lastRow - 1, 4).getValues();
+
+  // Filter out rows where OnHand is 0 
+  // Columns: [SKU, Count, Locked, OnHand] -> OnHand is index 3
+  const filteredData = data.filter(row => {
+    const onHand = parseFloat(row[3]) || 0;
+    return onHand !== 0;
+  });
+
+  // NEW: Re-inject the live formula back into Column D
+  filteredData.forEach((row, index) => {
+    let sheetRow = index + 2; // Offset by 2 because row 1 is headers
+    row[3] = `=B${sheetRow}-C${sheetRow}`;
+  });
+
+  // Clear the existing data from Row 2 downwards
+  rtoSheet.getRange(2, 1, lastRow - 1, 4).clearContent();
+
+  // Write the compacted, filtered data back
+  if (filteredData.length > 0) {
+    rtoSheet.getRange(2, 1, filteredData.length, 4).setValues(filteredData);
+  }
+}
+
+
+// ==============================================================================
+// BAYESIAN DYNAMIC WEIGHTING SYSTEM
+// ==============================================================================
+
+function updateDynamicWeights() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Update the Out-Of-Stock Ledger immediately before running weights math
+  recordMidnightOOSSnapshot();
+  
+  const mappingSheet = ss.getSheetByName("Mapping Sheet");
+  const masterInventorySheet = ss.getSheetByName("master_inventory");
+  const ledgerSheet = ss.getSheetByName("oos_ledger");
+
+  if (!mappingSheet || !masterInventorySheet || !ledgerSheet) {
+    ui.alert("Error", "Could not find required sheets (Mapping Sheet, master_inventory, oos_ledger). Ensure you have completed the manual setup.", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Source Spreadsheets
+  const sourceSpreadsheetId = "10OCuU7CFxuOtG2z6Q6fHWVtHbaVLg4wpZw-XeTzqq1E";
+  let sourceSS;
+  try {
+    sourceSS = SpreadsheetApp.openById(sourceSpreadsheetId);
+  } catch (e) {
+    ui.alert("System Error", "Exact Error: " + e.toString(), ui.ButtonSet.OK);
+    return;
+  }
+
+  const now = Date.now();
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  const HISTORY_WINDOW_ACTIVE_DAYS = 120;
+  const LOOKBACK_HORIZON_MS = 240 * ONE_DAY_MS; // Max calendar days to look back
+
+  // Helper for ultra-fast native timezone formatting (100x faster than Utilities.formatDate)
+  function getLocalYMD(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, '0') + "-" + String(d.getDate()).padStart(2, '0');
+  }
+
+  // --- PHASE 1: Initialization & The Active-Day Mapper ---
+
+  // 1.1 Read Ledger and build OOS Map
+  const ledgerData = ledgerSheet.getDataRange().getValues();
+  const oosLog = new Map(); // BlankType -> Set of OOS Date Strings (YYYY-MM-DD)
+
+  for (let i = 1; i < ledgerData.length; i++) {
+    const rawDate = ledgerData[i][0];
+    const blankType = String(ledgerData[i][1] || "").trim();
+    if (!rawDate || !blankType) continue;
+
+    const d = new Date(rawDate);
+    if (isNaN(d.getTime())) continue;
+    const dateStr = getLocalYMD(d);
+
+    if (!oosLog.has(blankType)) {
+      oosLog.set(blankType, new Set());
+    }
+    oosLog.get(blankType).add(dateStr);
+  }
+
+  // Helper to determine if a blank was active on a given day
+  function isBlankActiveOnDate(blankType, timestampMs) {
+    const d = new Date(timestampMs);
+    const dateStr = getLocalYMD(d);
+    if (oosLog.has(blankType) && oosLog.get(blankType).has(dateStr)) {
+      return false; // It was OOS
+    }
+    return true; // Assume IN-STOCK if not found
+  }
+
+  // 1.2 Build current OOS map (from master_inventory)
+  const masterData = masterInventorySheet.getDataRange().getValues();
+  const currentOosMap = new Map();
+  for (let i = 1; i < masterData.length; i++) {
+    const blankType = String(masterData[i][0] || "").trim();
+    const isOos = String(masterData[i][11] || "").trim().toLowerCase() === "yes";
+    if (blankType) currentOosMap.set(blankType, isOos);
+  }
+
+  // 1.3 Build Master Dictionary
+  const mappingData = mappingSheet.getDataRange().getValues();
+  const masterDict = new Map();
+  const lookupMap = new Map();
+  const duplicateSkus = new Set();
+
+  for (let i = 1; i < mappingData.length; i++) {
+    const row = mappingData[i];
+    const printCol = String(row[1] || "").trim();
+    const blankType = String(row[2] || "").trim();
+
+    let skuCount = 0;
+    for (let colIdx = 3; colIdx < row.length; colIdx++) {
+      const rawSku = String(row[colIdx] || "").trim().toUpperCase();
+      if (rawSku) {
+        skuCount++;
+        if (lookupMap.has(rawSku)) duplicateSkus.add(rawSku);
+        else lookupMap.set(rawSku, i);
+      }
+    }
+
+    if (skuCount > 0) {
+      let launchDateMatch = printCol.match(/<([^>]+)>/);
+      let launchDateStr = launchDateMatch ? launchDateMatch[1] : null;
+      let launchDateMs = now;
+      if (launchDateStr) {
+        let parsedDate = Date.parse(launchDateStr);
+        if (!isNaN(parsedDate)) launchDateMs = parsedDate;
+      }
+
+      let weightMatch = printCol.match(/\[(0(?:\.\d+)?|1(?:\.0+)?)\]/);
+      let currentWeight = weightMatch ? parseFloat(weightMatch[1]) : 0.6;
+
+      masterDict.set(i, {
+        salesEMA: 0,
+        launchDateMs: launchDateMs,
+        blankType: blankType,
+        currentWeight: currentWeight,
+        printStr: printCol
+      });
+    }
+  }
+
+  // 1.4 Precompute Active Day Indexing (O(1) Optimization for Sales Loop)
+  const activeDaysMap = new Map();
+  const uniqueBlanks = new Set();
+  masterDict.forEach(val => uniqueBlanks.add(val.blankType));
+
+  uniqueBlanks.forEach(blank => {
+    let activeDayCount = 0;
+    let mappingArray = new Array(245); // up to 240 days lookback
+    for (let d = 0; d <= 240; d++) {
+      let checkTime = now - (d * ONE_DAY_MS);
+      mappingArray[d] = activeDayCount; // Assign before incrementing (so today is 0 days old)
+      if (isBlankActiveOnDate(blank, checkTime)) {
+        activeDayCount++;
+      }
+    }
+    activeDaysMap.set(blank, mappingArray);
+  });
+
+  // --- PHASE 2: Data Ingestion (Active-Time Filter) ---
+  const missingSkus = new Set();
+  const uniqueMissingSkus = new Set();
+  let totalProcessedSkus = new Set();
+
+  function processSalesSheet(sheetName, skuColIdx, dateColIdx, isFlipkart = false) {
+    const sheet = sourceSS.getSheetByName(sheetName);
+    if (!sheet) return;
+    const data = sheet.getDataRange().getValues();
+
+    for (let i = 1; i < data.length; i++) {
+      let rawDate = data[i][dateColIdx];
+      if (!rawDate) continue;
+
+      let saleTime = 0;
+      if (rawDate instanceof Date) {
+        saleTime = rawDate.getTime();
+      } else {
+        let numDate = Number(rawDate);
+        if (!isNaN(numDate) && numDate > 20000 && numDate < 100000) {
+          saleTime = Math.round((numDate - 25569) * 86400 * 1000);
+        } else {
+          saleTime = Date.parse(rawDate);
+        }
+      }
+
+      // OPTIMIZATION: Filter out old sales BEFORE doing heavy String coercion & Regex
+      if (isNaN(saleTime) || now - saleTime > LOOKBACK_HORIZON_MS) continue;
+
+      let rawSku = String(data[i][skuColIdx] || "").trim().toUpperCase();
+      if (!rawSku) continue;
+
+      // Robust SKU Cleaning (removes all stray quotes like """)
+      rawSku = rawSku.replace(/"/g, '').trim();
+      if (isFlipkart) {
+        rawSku = rawSku.replace(/^SKU:\s*/i, '').trim();
+      }
+
+      totalProcessedSkus.add(rawSku);
+
+      if (lookupMap.has(rawSku)) {
+        let parentRow = lookupMap.get(rawSku);
+        if (masterDict.has(parentRow)) {
+          let design = masterDict.get(parentRow);
+
+          // ACTIVE-TIME FILTER
+          if (isBlankActiveOnDate(design.blankType, saleTime)) {
+            let calendarDaysAgo = Math.floor(Math.max(0, (now - saleTime) / ONE_DAY_MS));
+
+            if (calendarDaysAgo <= 240) {
+              let activeDaysAgo = activeDaysMap.get(design.blankType)[calendarDaysAgo];
+
+              if (activeDaysAgo <= HISTORY_WINDOW_ACTIVE_DAYS) {
+                // The Exponential Decay Distortion Fix
+                let recencyWeight = Math.exp(-activeDaysAgo / 30);
+                design.salesEMA += recencyWeight;
+              }
+            }
+          }
+        }
+      } else {
+        let dateStr = getLocalYMD(new Date(saleTime));
+        missingSkus.add(`${sheetName} | ${dateStr} | ${rawSku}`);
+        uniqueMissingSkus.add(rawSku);
+      }
+    }
+  }
+
+  processSalesSheet("WEBSITE_FORWARD", 20, 15);
+  processSalesSheet("myntra_forward", 2, 0);
+  processSalesSheet("AJIO_FORWARD", 4, 1);
+  processSalesSheet("FLIPKART_FORWARD", 3, 0, true);
+
+  // --- PHASE 3: Mathematical Transformation (Micro-Economies Model) ---
+  const blankDesignCount = new Map(); // blankType -> count of designs
+  const blankSalesMap = new Map(); // blankType -> Array of active sales
+  
+  masterDict.forEach((val) => {
+    // 1. Count designs per blank
+    let count = blankDesignCount.get(val.blankType) || 0;
+    blankDesignCount.set(val.blankType, count + 1);
+    
+    // 2. Group active sales by blank
+    if (currentOosMap.get(val.blankType) !== true && val.salesEMA > 0) {
+      if (!blankSalesMap.has(val.blankType)) {
+        blankSalesMap.set(val.blankType, []);
+      }
+      blankSalesMap.get(val.blankType).push(val.salesEMA);
+    }
+  });
+  
+  const blankCeilingMap = new Map(); // blankType -> local maxSales (95th percentile)
+  
+  blankSalesMap.forEach((salesArray, blankType) => {
+    salesArray.sort((a, b) => a - b);
+    let p95Index = Math.floor(salesArray.length * 0.95);
+    if (p95Index >= salesArray.length) p95Index = salesArray.length - 1;
+    let localMax = salesArray[p95Index];
+    if (localMax <= 0) localMax = 1;
+    blankCeilingMap.set(blankType, localMax);
+  });
+
+  const finalUpdates = []; 
+
+  masterDict.forEach((val, rowIndex) => {
+    let newWeight = val.currentWeight;
+    let isOosToday = currentOosMap.get(val.blankType) === true;
+    let numDesignsForBlank = blankDesignCount.get(val.blankType) || 1;
+    
+    if (isOosToday) {
+      // OOS Check: Freeze current weight
+      newWeight = val.currentWeight;
+    } else if (numDesignsForBlank === 1) {
+      // Single-Design Arena Override: Uncontested Champion
+      newWeight = 1.0;
+    } else {
+      // Active Age Calculation
+      let calendarAgeDays = Math.floor(Math.max(0, (now - val.launchDateMs) / ONE_DAY_MS));
+      let activeAgeDays = 0;
+      
+      if (calendarAgeDays <= 240) {
+        activeAgeDays = activeDaysMap.get(val.blankType)[calendarAgeDays];
+      } else {
+        // Fallback for extremely old designs
+        activeAgeDays = activeDaysMap.get(val.blankType)[240] + (calendarAgeDays - 240); 
+      }
+
+      // Local Ceiling & Ratio
+      let localMaxSales = blankCeilingMap.get(val.blankType) || 1;
+      let ratio = Math.min(1.0, val.salesEMA / localMaxSales);
+      
+      // Viability Base (The 0-to-1 Barrier)
+      let dataDrivenWeight = 0.0;
+      if (val.salesEMA > 0) {
+        dataDrivenWeight = 0.15 + (0.85 * ratio);
+      }
+      
+      // Bayesian Blending (Continuous Confidence)
+      const BASELINE_PRIOR = 0.6;
+      let confidence = Math.min(1.0, activeAgeDays / 45.0);
+      let blendedWeight = (BASELINE_PRIOR * (1.0 - confidence)) + (dataDrivenWeight * confidence);
+      
+      // Allow 2 decimal precision (e.g. 0.85) to prevent rigid tiering
+      newWeight = Math.round(blendedWeight * 100) / 100;
+
+      if (newWeight < 0.1) newWeight = 0.1; // Long-Tail Buffer
+      if (newWeight > 1.0) newWeight = 1.0;
+    }
+
+    // Regex Swap for Column B
+    let newPrintStr = val.printStr;
+    if (/\[(0(?:\.\d+)?|1(?:\.0+)?)\]/.test(newPrintStr)) {
+      newPrintStr = newPrintStr.replace(/\[(0(?:\.\d+)?|1(?:\.0+)?)\]/, `[${newWeight}]`);
+    } else {
+      newPrintStr = `${newPrintStr} [${newWeight}]`;
+    }
+
+    finalUpdates.push({ row: rowIndex + 1, val: newPrintStr });
+  });
+
+  // --- PHASE 4: Batch Writing & Reporting ---
+  if (finalUpdates.length > 0) {
+    let colBData = mappingSheet.getRange(1, 2, mappingData.length, 1).getValues();
+    finalUpdates.forEach(update => {
+      colBData[update.row - 1][0] = update.val;
+    });
+    mappingSheet.getRange(1, 2, mappingData.length, 1).setValues(colBData);
+  }
+
+  // Email Alert for 2% Rule (using unique SKUs)
+  let missingPct = (uniqueMissingSkus.size / (totalProcessedSkus.size || 1)) * 100;
+  if (missingPct > 2.0 && missingSkus.size > 0) {
+    let emailBody = "<h3>Unmapped SKUs Alert</h3>";
+    emailBody += "<p>The following SKUs had sales but were not found in the Mapping Sheet.</p>";
+    emailBody += "<table border='1' cellpadding='5'><tr><th>Platform | Date | Orphaned SKU</th></tr>";
+    missingSkus.forEach(skuInfo => {
+      emailBody += `<tr><td>${skuInfo}</td></tr>`;
+    });
+    emailBody += "</table>";
+
+    MailApp.sendEmail({
+      to: Session.getActiveUser().getEmail(),
+      subject: `🚨 Action Required: ${missingSkus.size} Unmapped SKUs found (${missingPct.toFixed(1)}%)`,
+      htmlBody: emailBody
+    });
+  }
+
+  if (duplicateSkus.size > 0) {
+    Logger.log("WARNING - Duplicate SKUs found in Mapping Sheet: " + Array.from(duplicateSkus).join(", "));
+  }
+
+  ui.alert("✅ Dynamic Weights Updated", "The Mapping Sheet has been successfully updated using the Active-Time Ledger and Bayesian Model.", ui.ButtonSet.OK);
+}
+
+// ==============================================================================
+// MIDNIGHT SNAPSHOT LOGIC (OOS LEDGER)
+// ==============================================================================
+
+function recordMidnightOOSSnapshot() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const masterSheet = ss.getSheetByName("master_inventory");
+  const ledgerSheet = ss.getSheetByName("oos_ledger");
+
+  if (!masterSheet || !ledgerSheet) return;
+
+  const masterData = masterSheet.getDataRange().getValues();
+  const ledgerDataToRead = ledgerSheet.getDataRange().getValues();
+  const now = new Date();
+  const todayStr = Utilities.formatDate(now, ss.getSpreadsheetTimeZone(), "dd-MMM-yyyy");
+
+  // Build a Set of existing entries to prevent duplicate bloat if run multiple times a day
+  const existingLedgerEntries = new Set();
+  for (let i = 1; i < ledgerDataToRead.length; i++) {
+    let rowDate = new Date(ledgerDataToRead[i][0]);
+    if (!isNaN(rowDate.getTime())) {
+      let dStr = Utilities.formatDate(rowDate, ss.getSpreadsheetTimeZone(), "dd-MMM-yyyy");
+      let bType = String(ledgerDataToRead[i][1] || "").trim();
+      existingLedgerEntries.add(dStr + "|" + bType);
+    }
+  }
+
+  const newRows = [];
+
+  // Skip headers (start at row 1)
+  for (let i = 1; i < masterData.length; i++) {
+    const blankType = String(masterData[i][0] || "").trim();
+    // Col L is index 11
+    const isOos = String(masterData[i][11] || "").trim().toLowerCase() === "yes";
+
+    // Data Minimization: ONLY log if it's Out of Stock AND not already logged today!
+    if (blankType && isOos) {
+      if (!existingLedgerEntries.has(todayStr + "|" + blankType)) {
+        newRows.push([todayStr, blankType]);
+      }
+    }
+  }
+
+  if (newRows.length > 0) {
+    ledgerSheet.getRange(ledgerSheet.getLastRow() + 1, 1, newRows.length, 2).setValues(newRows);
+    SpreadsheetApp.flush(); // Ensure data is physically written immediately
+  }
+
+  // Self-Cleaning: Delete rows older than 240 days
+  const cutoffDate = new Date(now.getTime() - (240 * 24 * 60 * 60 * 1000));
+  const ledgerData = ledgerSheet.getDataRange().getValues();
+
+  let firstValidKeepIndex = -1;
+  for (let i = 1; i < ledgerData.length; i++) {
+    let rowDate = new Date(ledgerData[i][0]);
+    if (!isNaN(rowDate.getTime()) && rowDate >= cutoffDate) {
+      firstValidKeepIndex = i;
+      break; // Found the first valid date that is recent enough to keep
+    }
+  }
+
+  // If we found a valid keep date, delete everything before it
+  if (firstValidKeepIndex > 1) {
+    ledgerSheet.deleteRows(2, firstValidKeepIndex - 1);
+  } else if (firstValidKeepIndex === -1 && ledgerData.length > 1) {
+    // Entire sheet is old or invalid, delete all data rows
+    ledgerSheet.deleteRows(2, ledgerData.length - 1);
+  }
 }
