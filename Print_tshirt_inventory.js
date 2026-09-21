@@ -102,7 +102,7 @@ function processSKUsAndDecrementStock() {
     // FIXED: Map ALL SKUs regardless of Column A/C status
     const skuToMappingInfo = new Map(); // SKU -> {productName, masterProductName, size, columnIndex}
 
-    mappingData.forEach(row => {
+    mappingData.forEach((row, rowIndex) => {
       const rawProductName = row[0]; // Column A (can be empty)
       const rawMasterProductName = row[2]; // Column C (can be empty)
       const productName = (rawProductName === null || rawProductName === undefined || rawProductName === "") ? "" : String(rawProductName).trim().toUpperCase();
@@ -132,7 +132,8 @@ function processSKUsAndDecrementStock() {
               productName: productName || "", // Store empty string if null/undefined
               masterProductName: masterProductName || "", // Store empty string if null/undefined
               size: size,
-              columnIndex: actualColumnIndex
+              columnIndex: actualColumnIndex,
+              rowIndex: rowIndex
             });
           }
         }
@@ -319,18 +320,57 @@ function processSKUsAndDecrementStock() {
           if (!skuToMappingInfo.has(rtoSku)) {
             rtoStatus = "RTO: ❌ (Not in Mapping Sheet)";
             rtoColor = "#FF0000"; // Red
-          } else if (!rtoInventoryInfoMap.has(rtoSku)) {
-            rtoStatus = "RTO: ❌ (Valid SKU, but missing in rto_inventory sheet)";
-            rtoColor = "#FF0000"; // Red
           } else {
-            const rtoEntry = rtoInventoryInfoMap.get(rtoSku);
-            if (rtoEntry.count <= 0) {
-              rtoStatus = "RTO: ⚠️ (Stock already 0, cannot decrease)";
-              rtoColor = "#FF0000"; // Red
+            const inputMapping = skuToMappingInfo.get(rtoSku);
+            let rtoMatch = null;
+
+            // 1. Prioritize exact match
+            if (rtoInventoryInfoMap.has(rtoSku) && rtoInventoryInfoMap.get(rtoSku).count > 0) {
+              rtoMatch = rtoSku;
+            } 
+            // 2. Fallback to scanning for alias
+            else {
+              for (const [inventorySku, rtoEntry] of rtoInventoryInfoMap.entries()) {
+                const inventoryMapping = skuToMappingInfo.get(inventorySku);
+                if (inventoryMapping && 
+                    inventoryMapping.rowIndex === inputMapping.rowIndex && 
+                    inventoryMapping.size === inputMapping.size && 
+                    rtoEntry.count > 0) {
+                  rtoMatch = inventorySku;
+                  break;
+                }
+              }
+            }
+
+            // 3. Process result
+            if (!rtoMatch) {
+              // Distinguish between purely missing vs stock is 0
+              let hasAnyAlias = false;
+              if (rtoInventoryInfoMap.has(rtoSku)) {
+                hasAnyAlias = true;
+              } else {
+                for (const [inventorySku, rtoEntry] of rtoInventoryInfoMap.entries()) {
+                  const inventoryMapping = skuToMappingInfo.get(inventorySku);
+                  if (inventoryMapping && inventoryMapping.rowIndex === inputMapping.rowIndex && inventoryMapping.size === inputMapping.size) {
+                    hasAnyAlias = true;
+                    break;
+                  }
+                }
+              }
+
+              if (hasAnyAlias) {
+                rtoStatus = "RTO: ⚠️ (Stock already 0, cannot decrease)";
+                rtoColor = "#FF0000"; // Red
+              } else {
+                rtoStatus = "RTO: ❌ (Valid SKU, but missing in rto_inventory sheet)";
+                rtoColor = "#FF0000"; // Red
+              }
             } else {
+              // Found a valid match (exact or alias) with count > 0
+              const rtoEntry = rtoInventoryInfoMap.get(rtoMatch);
               rtoEntry.count -= 1;
               rtoEntry.locked = Math.max(0, rtoEntry.locked - 1);
-              // Silent success: rtoStatus remains empty, rtoColor remains black
+              // Silent success as requested
             }
           }
         }
