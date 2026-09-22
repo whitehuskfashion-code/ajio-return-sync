@@ -19,6 +19,7 @@ function onOpen() {
     .addItem('Suggest Fabric Rolls', 'generateFabricRollSuggestions')
     .addSeparator()
     .addItem('Update Weight', 'updateDynamicWeights')
+    .addItem('Update Dynamic Thresholds', 'updateDynamicThresholds')
     .addToUi();
 }
 
@@ -327,15 +328,15 @@ function processSKUsAndDecrementStock() {
             // 1. Prioritize exact match
             if (rtoInventoryInfoMap.has(rtoSku) && rtoInventoryInfoMap.get(rtoSku).count > 0) {
               rtoMatch = rtoSku;
-            } 
+            }
             // 2. Fallback to scanning for alias
             else {
               for (const [inventorySku, rtoEntry] of rtoInventoryInfoMap.entries()) {
                 const inventoryMapping = skuToMappingInfo.get(inventorySku);
-                if (inventoryMapping && 
-                    inventoryMapping.rowIndex === inputMapping.rowIndex && 
-                    inventoryMapping.size === inputMapping.size && 
-                    rtoEntry.count > 0) {
+                if (inventoryMapping &&
+                  inventoryMapping.rowIndex === inputMapping.rowIndex &&
+                  inventoryMapping.size === inputMapping.size &&
+                  rtoEntry.count > 0) {
                   rtoMatch = inventorySku;
                   break;
                 }
@@ -794,7 +795,7 @@ function highlightMasterInventory() {
       if (colorM === "#FF0000") redCount++;
       if (colorL === "#FF0000") redCount++;
       if (colorXL === "#FF0000") redCount++;
-      
+
       // Update Column L flag
       colLUpdates.push([redCount >= 2 ? "Yes" : "No"]);
     } else {
@@ -1368,8 +1369,9 @@ function generateRatioForSpecificRow(ss, sh, rowNum, product, paidRolls, formatt
  * Uses a bulk read/write method to ensure no empty rows are left behind.
  */
 function cleanZeroRtoStock() {
-  const ui = SpreadsheetApp.getUi();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let ui = null;
+  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
   const rtoSheet = ss.getSheetByName("rto_inventory");
 
   if (!rtoSheet) {
@@ -1414,18 +1416,19 @@ function cleanZeroRtoStock() {
 // ==============================================================================
 
 function updateDynamicWeights() {
-  const ui = SpreadsheetApp.getUi();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+  let ui = null;
+  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
+
   // Update the Out-Of-Stock Ledger immediately before running weights math
   recordMidnightOOSSnapshot();
-  
+
   const mappingSheet = ss.getSheetByName("Mapping Sheet");
   const masterInventorySheet = ss.getSheetByName("master_inventory");
   const ledgerSheet = ss.getSheetByName("oos_ledger");
 
   if (!mappingSheet || !masterInventorySheet || !ledgerSheet) {
-    ui.alert("Error", "Could not find required sheets (Mapping Sheet, master_inventory, oos_ledger). Ensure you have completed the manual setup.", ui.ButtonSet.OK);
+    if (ui) ui.alert("Error", "Could not find required sheets (Mapping Sheet, master_inventory, oos_ledger). Ensure you have completed the manual setup.", ui.ButtonSet.OK);
     return;
   }
 
@@ -1435,7 +1438,7 @@ function updateDynamicWeights() {
   try {
     sourceSS = SpreadsheetApp.openById(sourceSpreadsheetId);
   } catch (e) {
-    ui.alert("System Error", "Exact Error: " + e.toString(), ui.ButtonSet.OK);
+    if (ui) ui.alert("System Error", "Exact Error: " + e.toString(), ui.ButtonSet.OK);
     return;
   }
 
@@ -1626,12 +1629,12 @@ function updateDynamicWeights() {
   // --- PHASE 3: Mathematical Transformation (Micro-Economies Model) ---
   const blankDesignCount = new Map(); // blankType -> count of designs
   const blankSalesMap = new Map(); // blankType -> Array of active sales
-  
+
   masterDict.forEach((val) => {
     // 1. Count designs per blank
     let count = blankDesignCount.get(val.blankType) || 0;
     blankDesignCount.set(val.blankType, count + 1);
-    
+
     // 2. Group active sales by blank
     if (currentOosMap.get(val.blankType) !== true && val.salesEMA > 0) {
       if (!blankSalesMap.has(val.blankType)) {
@@ -1640,9 +1643,9 @@ function updateDynamicWeights() {
       blankSalesMap.get(val.blankType).push(val.salesEMA);
     }
   });
-  
+
   const blankCeilingMap = new Map(); // blankType -> local maxSales (95th percentile)
-  
+
   blankSalesMap.forEach((salesArray, blankType) => {
     salesArray.sort((a, b) => a - b);
     let p95Index = Math.floor(salesArray.length * 0.95);
@@ -1652,13 +1655,13 @@ function updateDynamicWeights() {
     blankCeilingMap.set(blankType, localMax);
   });
 
-  const finalUpdates = []; 
+  const finalUpdates = [];
 
   masterDict.forEach((val, rowIndex) => {
     let newWeight = val.currentWeight;
     let isOosToday = currentOosMap.get(val.blankType) === true;
     let numDesignsForBlank = blankDesignCount.get(val.blankType) || 1;
-    
+
     if (isOosToday) {
       // OOS Check: Freeze current weight
       newWeight = val.currentWeight;
@@ -1669,29 +1672,29 @@ function updateDynamicWeights() {
       // Active Age Calculation
       let calendarAgeDays = Math.floor(Math.max(0, (now - val.launchDateMs) / ONE_DAY_MS));
       let activeAgeDays = 0;
-      
+
       if (calendarAgeDays <= 240) {
         activeAgeDays = activeDaysMap.get(val.blankType)[calendarAgeDays];
       } else {
         // Fallback for extremely old designs
-        activeAgeDays = activeDaysMap.get(val.blankType)[240] + (calendarAgeDays - 240); 
+        activeAgeDays = activeDaysMap.get(val.blankType)[240] + (calendarAgeDays - 240);
       }
 
       // Local Ceiling & Ratio
       let localMaxSales = blankCeilingMap.get(val.blankType) || 1;
       let ratio = Math.min(1.0, val.salesEMA / localMaxSales);
-      
+
       // Viability Base (The 0-to-1 Barrier)
       let dataDrivenWeight = 0.0;
       if (val.salesEMA > 0) {
         dataDrivenWeight = 0.15 + (0.85 * ratio);
       }
-      
+
       // Bayesian Blending (Continuous Confidence)
       const BASELINE_PRIOR = 0.6;
       let confidence = Math.min(1.0, activeAgeDays / 45.0);
       let blendedWeight = (BASELINE_PRIOR * (1.0 - confidence)) + (dataDrivenWeight * confidence);
-      
+
       // Allow 2 decimal precision (e.g. 0.85) to prevent rigid tiering
       newWeight = Math.round(blendedWeight * 100) / 100;
 
@@ -1741,7 +1744,9 @@ function updateDynamicWeights() {
     Logger.log("WARNING - Duplicate SKUs found in Mapping Sheet: " + Array.from(duplicateSkus).join(", "));
   }
 
-  ui.alert("✅ Dynamic Weights Updated", "The Mapping Sheet has been successfully updated using the Active-Time Ledger and Bayesian Model.", ui.ButtonSet.OK);
+  try {
+    ss.toast("The Mapping Sheet has been successfully updated.", "✅ Dynamic Weights Updated");
+  } catch(e) {}
 }
 
 // ==============================================================================
@@ -1812,4 +1817,296 @@ function recordMidnightOOSSnapshot() {
     // Entire sheet is old or invalid, delete all data rows
     ledgerSheet.deleteRows(2, ledgerData.length - 1);
   }
+}
+
+
+// ==============================================================================
+// DYNAMIC THRESHOLDS (PRINT ON DEMAND)
+// ==============================================================================
+function updateDynamicThresholds() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let ui = null;
+  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
+
+  const testSheet = ss.getSheetByName("test sheet");
+  const mappingSheet = ss.getSheetByName("Mapping Sheet");
+  const ledgerSheet = ss.getSheetByName("oos_ledger");
+
+  if (!testSheet || !mappingSheet || !ledgerSheet) {
+    if (ui) ui.alert("Error", "Could not find required sheets (test sheet, Mapping Sheet, oos_ledger).", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Source Spreadsheets
+  const sourceSpreadsheetId = "10OCuU7CFxuOtG2z6Q6fHWVtHbaVLg4wpZw-XeTzqq1E";
+  let sourceSS;
+  try {
+    sourceSS = SpreadsheetApp.openById(sourceSpreadsheetId);
+  } catch (e) {
+    if (ui) ui.alert("System Error", "Exact Error: " + e.toString(), ui.ButtonSet.OK);
+    return;
+  }
+
+  const now = Date.now();
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  const HISTORY_WINDOW_ACTIVE_DAYS = 120;
+  const LOOKBACK_HORIZON_MS = 240 * ONE_DAY_MS;
+
+  function getLocalYMD(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, '0') + "-" + String(d.getDate()).padStart(2, '0');
+  }
+
+  // --- PHASE 1: Initialization & The Active-Day Mapper ---
+  const ledgerData = ledgerSheet.getDataRange().getValues();
+  const oosLog = new Map();
+
+  for (let i = 1; i < ledgerData.length; i++) {
+    const rawDate = ledgerData[i][0];
+    const blankType = String(ledgerData[i][1] || "").trim();
+    if (!rawDate || !blankType) continue;
+
+    const d = new Date(rawDate);
+    if (isNaN(d.getTime())) continue;
+    const dateStr = getLocalYMD(d);
+
+    if (!oosLog.has(blankType)) {
+      oosLog.set(blankType, new Set());
+    }
+    oosLog.get(blankType).add(dateStr);
+  }
+
+  function isBlankActiveOnDate(blankType, timestampMs) {
+    const d = new Date(timestampMs);
+    const dateStr = getLocalYMD(d);
+    if (oosLog.has(blankType) && oosLog.get(blankType).has(dateStr)) {
+      return false; // It was OOS
+    }
+    return true; // Assume IN-STOCK if not found
+  }
+
+  // --- PHASE 2: Building the Print Master Dictionary & Festive Calendar ---
+  const mappingData = mappingSheet.getDataRange().getValues();
+  const lookupMap = new Map(); // SKU -> PrintName
+  const printDict = new Map(); // PrintName -> { score15: 0, score60: 0, launchDateMs: 0, blankType: '...' }
+  const uniqueBlanks = new Set();
+
+  for (let i = 1; i < mappingData.length; i++) {
+    const row = mappingData[i];
+
+    // FIX: Using Column A (clean name) which perfectly matches test sheet B
+    const printName = String(row[0] || "").trim(); // Column A
+    const printCol = String(row[1] || "").trim(); // Column B
+    const blankType = String(row[2] || "").trim(); // Column C
+
+    if (!printName) continue;
+
+    uniqueBlanks.add(blankType);
+    if (!printDict.has(printName)) {
+      let launchDateMs = now;
+      let launchDateMatch = printCol.match(/<([^>]+)>/);
+      if (launchDateMatch) {
+        let launchDateStr = launchDateMatch[1];
+        let parsedDate = Date.parse(launchDateStr);
+        if (!isNaN(parsedDate)) launchDateMs = parsedDate;
+      }
+
+      printDict.set(printName, { score15: 0, score60: 0, launchDateMs: launchDateMs, blankType: blankType });
+    }
+
+    for (let colIdx = 3; colIdx < row.length; colIdx++) {
+      const rawSku = String(row[colIdx] || "").trim().toUpperCase();
+      if (rawSku) {
+        lookupMap.set(rawSku, printName);
+      }
+    }
+  }
+
+  // Precompute Active Day Indexing (O(1) Optimization)
+  const activeDaysMap = new Map();
+  uniqueBlanks.forEach(blank => {
+    let activeDayCount = 0;
+    let mappingArray = new Array(245);
+    for (let d = 0; d <= 240; d++) {
+      let checkTime = now - (d * ONE_DAY_MS);
+      mappingArray[d] = activeDayCount;
+      if (isBlankActiveOnDate(blank, checkTime)) {
+        activeDayCount++;
+      }
+    }
+    activeDaysMap.set(blank, mappingArray);
+  });
+
+  // Festive Calendar Parsing
+  const salesDatesSheet = ss.getSheetByName("sales_dates");
+  let festiveMultiplier = 1.0;
+
+  if (salesDatesSheet) {
+    const calendarData = salesDatesSheet.getDataRange().getValues();
+
+    function getLocalYMD(d) {
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, '0') + "-" + String(d.getDate()).padStart(2, '0');
+    }
+    const todayStr = getLocalYMD(new Date(now));
+    const todayMs = Date.parse(todayStr); // Normalized midnight today
+
+    for (let i = 1; i < calendarData.length; i++) {
+      let sDateRaw = calendarData[i][0];
+      let eDateRaw = calendarData[i][1];
+      let boostRaw = parseFloat(calendarData[i][2]);
+
+      if (sDateRaw && eDateRaw && !isNaN(boostRaw)) {
+        let sMs = sDateRaw instanceof Date ? sDateRaw.getTime() : Date.parse(sDateRaw);
+        let eMs = eDateRaw instanceof Date ? eDateRaw.getTime() : Date.parse(eDateRaw);
+
+        if (!isNaN(sMs) && !isNaN(eMs)) {
+          // Offsets: -2 days for start, -1 day for end
+          let effectiveStartMs = sMs - (2 * ONE_DAY_MS);
+          let effectiveEndMs = eMs - (1 * ONE_DAY_MS);
+
+          if (todayMs >= effectiveStartMs && todayMs <= effectiveEndMs) {
+            if (boostRaw > festiveMultiplier) {
+              festiveMultiplier = boostRaw;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // --- PHASE 3: Sales Ingestion (Dual-Velocity EMA) ---
+  function processSalesSheet(sheetName, skuColIdx, dateColIdx, isFlipkart = false) {
+    const sheet = sourceSS.getSheetByName(sheetName);
+    if (!sheet) return;
+    const data = sheet.getDataRange().getValues();
+
+    for (let i = 1; i < data.length; i++) {
+      let rawDate = data[i][dateColIdx];
+      if (!rawDate) continue;
+
+      let saleTime = 0;
+      if (rawDate instanceof Date) {
+        saleTime = rawDate.getTime();
+      } else {
+        let numDate = Number(rawDate);
+        if (!isNaN(numDate) && numDate > 20000 && numDate < 100000) {
+          saleTime = Math.round((numDate - 25569) * 86400 * 1000);
+        } else {
+          saleTime = Date.parse(rawDate);
+        }
+      }
+
+      if (isNaN(saleTime) || now - saleTime > LOOKBACK_HORIZON_MS) continue;
+
+      let rawSku = String(data[i][skuColIdx] || "").trim().toUpperCase();
+      if (!rawSku) continue;
+
+      rawSku = rawSku.replace(/"/g, '').trim();
+      if (isFlipkart) {
+        rawSku = rawSku.replace(/^SKU:\s*/i, '').trim();
+      }
+
+      if (lookupMap.has(rawSku)) {
+        let printName = lookupMap.get(rawSku);
+        if (printDict.has(printName)) {
+          let design = printDict.get(printName);
+
+          if (isBlankActiveOnDate(design.blankType, saleTime)) {
+            let calendarDaysAgo = Math.floor(Math.max(0, (now - saleTime) / ONE_DAY_MS));
+
+            if (calendarDaysAgo <= 240) {
+              let activeDaysAgo = activeDaysMap.get(design.blankType)[calendarDaysAgo];
+
+              if (activeDaysAgo <= HISTORY_WINDOW_ACTIVE_DAYS) {
+                // Dual-Velocity Decay
+                let recencyWeight15 = Math.exp(-activeDaysAgo / 15.0);
+                let recencyWeight60 = Math.exp(-activeDaysAgo / 60.0);
+                design.score15 += recencyWeight15;
+                design.score60 += recencyWeight60;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  processSalesSheet("WEBSITE_FORWARD", 20, 15);
+  processSalesSheet("myntra_forward", 2, 0);
+  processSalesSheet("AJIO_FORWARD", 4, 1);
+  processSalesSheet("FLIPKART_FORWARD", 3, 0, true);
+
+  // --- PHASE 4 & 5: Poisson Threshold Normalization ---
+  const lastRow = testSheet.getLastRow();
+  if (lastRow < 2) {
+    if (ui) ui.alert("Notice", "test sheet is empty.", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Get columns B to E (B=PrintName, C=BatchSize, D=Inventory, E=Threshold)
+  const targetRange = testSheet.getRange(2, 2, lastRow - 1, 4);
+  const targetData = targetRange.getValues();
+  const thresholdUpdates = [];
+
+  for (let i = 0; i < targetData.length; i++) {
+    const printName = String(targetData[i][0] || "").trim(); // Column B
+    const currentThreshold = parseInt(targetData[i][3]); // Column E
+
+    // Fallback if empty
+    let finalThreshold = isNaN(currentThreshold) ? 1 : currentThreshold;
+
+    if (printName && finalThreshold !== -1) {
+      if (printDict.has(printName)) {
+        const design = printDict.get(printName);
+
+        let calendarAgeDays = Math.floor(Math.max(0, (now - design.launchDateMs) / ONE_DAY_MS));
+        let activeAgeDays = 0;
+
+        if (calendarAgeDays <= 240) {
+          activeAgeDays = activeDaysMap.get(design.blankType)[calendarAgeDays];
+        } else {
+          activeAgeDays = activeDaysMap.get(design.blankType)[240] + (calendarAgeDays - 240);
+        }
+
+        // 1. Calculate Dynamic Denominators (Protects New Launches)
+        let denom15 = Math.max(0.1, 15.0 * (1.0 - Math.exp(-activeAgeDays / 15.0)));
+        let denom60 = Math.max(0.1, 60.0 * (1.0 - Math.exp(-activeAgeDays / 60.0)));
+
+        // 2. Calculate Velocities
+        let v15 = design.score15 / denom15;
+        let v60 = design.score60 / denom60;
+
+        // 3. Blended True Velocity
+        let trueVelocity = (0.6 * v15) + (0.4 * v60);
+
+        // 4. Volume-Aware Multiplier (1.15x Base for Good Sellers, or Festive Boost)
+        let projectedVelocity = trueVelocity;
+        if (trueVelocity >= 1.0) {
+          let activeMultiplier = Math.max(1.15, festiveMultiplier);
+          projectedVelocity = trueVelocity * activeMultiplier;
+        }
+
+        // 5. Poisson Reorder Point Formula (Demand + 97% Safety Stock)
+        let rawThreshold = projectedVelocity + (2.0 * Math.sqrt(projectedVelocity));
+
+        // 6. Hard Floor & Ceiling Rounding (Extra Safety)
+        let calculatedThreshold = Math.max(1, Math.ceil(rawThreshold));
+
+        // Cold Start Protection (7 days)
+        if (calendarAgeDays <= 7) {
+          calculatedThreshold = Math.max(calculatedThreshold, finalThreshold);
+        }
+
+        finalThreshold = calculatedThreshold;
+      }
+    }
+
+    thresholdUpdates.push([finalThreshold]);
+  }
+
+  // Write Thresholds (Column E)
+  testSheet.getRange(2, 5, thresholdUpdates.length, 1).setValues(thresholdUpdates);
+
+  try {
+    ss.toast(`Thresholds updated! Festive Multiplier: ${festiveMultiplier}x`, "✅ Success");
+  } catch (e) {}
 }
