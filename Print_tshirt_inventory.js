@@ -588,12 +588,12 @@ function updateInventoryLookupsAndThresholds() {
     if (name) {
       name = String(name).trim(); // Trim spaces for consistency
 
-      let weight = 1; // Default fallback
+      let weight = 0.2; // Default fallback
 
       if (designInfo) {
         let designStr = String(designInfo).trim();
-        // Regex to extract value inside brackets, e.g. [0.2] or [1]
-        let match = designStr.match(/\[(.*?)\]/);
+        // Regex to extract True Velocity inside pipes, e.g. |0.2| or |2.5|
+        let match = designStr.match(/\|([\d.]+)\|/);
 
         if (match && match[1]) {
           let parsedWeight = parseFloat(match[1]);
@@ -608,9 +608,9 @@ function updateInventoryLookupsAndThresholds() {
     }
   });
 
-  // Round all totals to the nearest integer (e.g., 2.2 -> 2, 2.9 -> 3)
+  // Fix JS floating point bugs (e.g. 3.9999999 -> 4.00) so tier lookups match exactly
   mappingCounts.forEach((totalWeight, masterProduct) => {
-    mappingCounts.set(masterProduct, Math.round(totalWeight));
+    mappingCounts.set(masterProduct, Math.round(totalWeight * 100) / 100);
   });
 
   // --- 3. Parse Tier Rules ---
@@ -1525,11 +1525,17 @@ function updateDynamicWeights() {
       let weightMatch = printCol.match(/\[(0(?:\.\d+)?|1(?:\.0+)?)\]/);
       let currentWeight = weightMatch ? parseFloat(weightMatch[1]) : 0.6;
 
+      let velocityMatch = printCol.match(/\|([\d.]+)\|/);
+      let currentVelocity = velocityMatch ? parseFloat(velocityMatch[1]) : 0.0;
+
       masterDict.set(i, {
         salesEMA: 0,
+        score15: 0,
+        score75: 0,
         launchDateMs: launchDateMs,
         blankType: blankType,
         currentWeight: currentWeight,
+        currentVelocity: currentVelocity,
         printStr: printCol
       });
     }
@@ -1609,6 +1615,11 @@ function updateDynamicWeights() {
                 // The Exponential Decay Distortion Fix
                 let recencyWeight = Math.exp(-activeDaysAgo / 30);
                 design.salesEMA += recencyWeight;
+
+                let recencyWeight15 = Math.exp(-activeDaysAgo / 15.0);
+                let recencyWeight75 = Math.exp(-activeDaysAgo / 75.0);
+                design.score15 += recencyWeight15;
+                design.score75 += recencyWeight75;
               }
             }
           }
@@ -1659,56 +1670,68 @@ function updateDynamicWeights() {
 
   masterDict.forEach((val, rowIndex) => {
     let newWeight = val.currentWeight;
+    let finalVelocityStr = val.currentVelocity.toFixed(2);
     let isOosToday = currentOosMap.get(val.blankType) === true;
     let numDesignsForBlank = blankDesignCount.get(val.blankType) || 1;
 
-    if (isOosToday) {
-      // OOS Check: Freeze current weight
-      newWeight = val.currentWeight;
-    } else if (numDesignsForBlank === 1) {
-      // Single-Design Arena Override: Uncontested Champion
-      newWeight = 1.0;
+    // Active Age Calculation
+    let calendarAgeDays = Math.floor(Math.max(0, (now - val.launchDateMs) / ONE_DAY_MS));
+    let activeAgeDays = 0;
+
+    if (calendarAgeDays <= 240) {
+      activeAgeDays = activeDaysMap.get(val.blankType)[calendarAgeDays];
     } else {
-      // Active Age Calculation
-      let calendarAgeDays = Math.floor(Math.max(0, (now - val.launchDateMs) / ONE_DAY_MS));
-      let activeAgeDays = 0;
+      // Fallback for extremely old designs
+      activeAgeDays = activeDaysMap.get(val.blankType)[240] + (calendarAgeDays - 240);
+    }
 
-      if (calendarAgeDays <= 240) {
-        activeAgeDays = activeDaysMap.get(val.blankType)[calendarAgeDays];
+    if (isOosToday) {
+      // OOS Check: Freeze current weight and velocity
+      newWeight = val.currentWeight;
+      finalVelocityStr = val.currentVelocity.toFixed(2);
+    } else {
+      // --- 1. LOCAL ALLOCATION WEIGHT [x] ---
+      if (numDesignsForBlank === 1) {
+        newWeight = 1.0;
       } else {
-        // Fallback for extremely old designs
-        activeAgeDays = activeDaysMap.get(val.blankType)[240] + (calendarAgeDays - 240);
+        let localMaxSales = blankCeilingMap.get(val.blankType) || 1;
+        let ratio = Math.min(1.0, val.salesEMA / localMaxSales);
+
+        let dataDrivenWeight = 0.0;
+        if (val.salesEMA > 0) {
+          dataDrivenWeight = 0.15 + (0.85 * ratio);
+        }
+
+        const BASELINE_PRIOR = 0.6;
+        let confidence = Math.min(1.0, activeAgeDays / 45.0);
+        let blendedWeight = (BASELINE_PRIOR * (1.0 - confidence)) + (dataDrivenWeight * confidence);
+
+        newWeight = Math.round(blendedWeight * 100) / 100;
+        if (newWeight < 0.1) newWeight = 0.1;
+        if (newWeight > 1.0) newWeight = 1.0;
       }
 
-      // Local Ceiling & Ratio
-      let localMaxSales = blankCeilingMap.get(val.blankType) || 1;
-      let ratio = Math.min(1.0, val.salesEMA / localMaxSales);
+      // --- 2. TRUE VELOCITY |y| ---
+      let denom15 = Math.max(0.1, 15.0 * (1.0 - Math.exp(-activeAgeDays / 15.0)));
+      let denom75 = Math.max(0.1, 75.0 * (1.0 - Math.exp(-activeAgeDays / 75.0)));
 
-      // Viability Base (The 0-to-1 Barrier)
-      let dataDrivenWeight = 0.0;
-      if (val.salesEMA > 0) {
-        dataDrivenWeight = 0.15 + (0.85 * ratio);
-      }
+      let v15 = val.score15 / denom15;
+      let v75 = val.score75 / denom75;
+      let trueVelocity = (0.6 * v15) + (0.4 * v75);
 
-      // Bayesian Blending (Continuous Confidence)
-      const BASELINE_PRIOR = 0.6;
-      let confidence = Math.min(1.0, activeAgeDays / 45.0);
-      let blendedWeight = (BASELINE_PRIOR * (1.0 - confidence)) + (dataDrivenWeight * confidence);
+      // New Launch Assumption (Baseline runway for 0 sales)
+      let assumedVelocity = 0.25 * Math.exp(-activeAgeDays / 14.0);
+      let finalVelocityNum = Math.max(trueVelocity, assumedVelocity);
 
-      // Allow 2 decimal precision (e.g. 0.85) to prevent rigid tiering
-      newWeight = Math.round(blendedWeight * 100) / 100;
-
-      if (newWeight < 0.1) newWeight = 0.1; // Long-Tail Buffer
-      if (newWeight > 1.0) newWeight = 1.0;
+      finalVelocityStr = (Math.round(finalVelocityNum * 100) / 100).toFixed(2);
     }
 
     // Regex Swap for Column B
     let newPrintStr = val.printStr;
-    if (/\[(0(?:\.\d+)?|1(?:\.0+)?)\]/.test(newPrintStr)) {
-      newPrintStr = newPrintStr.replace(/\[(0(?:\.\d+)?|1(?:\.0+)?)\]/, `[${newWeight}]`);
-    } else {
-      newPrintStr = `${newPrintStr} [${newWeight}]`;
-    }
+    // Strip out all existing brackets and pipes
+    newPrintStr = newPrintStr.replace(/\s*\[.*?\]/g, '').replace(/\s*\|.*?\|/g, '').trim();
+    // Append fresh values
+    newPrintStr = `${newPrintStr} [${newWeight}] |${finalVelocityStr}|`;
 
     finalUpdates.push({ row: rowIndex + 1, val: newPrintStr });
   });
@@ -1910,7 +1933,7 @@ function updateDynamicThresholds() {
         if (!isNaN(parsedDate)) launchDateMs = parsedDate;
       }
 
-      printDict.set(printName, { score15: 0, score60: 0, launchDateMs: launchDateMs, blankType: blankType });
+      printDict.set(printName, { score15: 0, score75: 0, launchDateMs: launchDateMs, blankType: blankType });
     }
 
     for (let colIdx = 3; colIdx < row.length; colIdx++) {
@@ -2019,9 +2042,9 @@ function updateDynamicThresholds() {
               if (activeDaysAgo <= HISTORY_WINDOW_ACTIVE_DAYS) {
                 // Dual-Velocity Decay
                 let recencyWeight15 = Math.exp(-activeDaysAgo / 15.0);
-                let recencyWeight60 = Math.exp(-activeDaysAgo / 60.0);
+                let recencyWeight75 = Math.exp(-activeDaysAgo / 75.0);
                 design.score15 += recencyWeight15;
-                design.score60 += recencyWeight60;
+                design.score75 += recencyWeight75;
               }
             }
           }
@@ -2069,14 +2092,14 @@ function updateDynamicThresholds() {
 
         // 1. Calculate Dynamic Denominators (Protects New Launches)
         let denom15 = Math.max(0.1, 15.0 * (1.0 - Math.exp(-activeAgeDays / 15.0)));
-        let denom60 = Math.max(0.1, 60.0 * (1.0 - Math.exp(-activeAgeDays / 60.0)));
+        let denom75 = Math.max(0.1, 75.0 * (1.0 - Math.exp(-activeAgeDays / 75.0)));
 
         // 2. Calculate Velocities
         let v15 = design.score15 / denom15;
-        let v60 = design.score60 / denom60;
+        let v75 = design.score75 / denom75;
 
         // 3. Blended True Velocity
-        let trueVelocity = (0.6 * v15) + (0.4 * v60);
+        let trueVelocity = (0.6 * v15) + (0.4 * v75);
 
         // 4. Volume-Aware Multiplier (1.15x Base for Good Sellers, or Festive Boost)
         let projectedVelocity = trueVelocity;
