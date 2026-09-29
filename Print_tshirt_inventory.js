@@ -94,8 +94,9 @@ function processSKUsAndDecrementStock() {
       if (rawRtoSku !== null && rawRtoSku !== undefined && rawRtoSku !== "") {
         const rtoSku = String(rawRtoSku).trim().toUpperCase();
         if (rtoSku) {
-          if (!rtoInventoryInfoMap.has(rtoSku)) {
-            rtoInventoryInfoMap.set(_normalizeSku(rtoSku), {
+          let rtoNorm = _normalizeSku(rtoSku);
+          if (!rtoInventoryInfoMap.has(rtoNorm)) {
+            rtoInventoryInfoMap.set(rtoNorm, {
               rowIndex: index,
               count: Number(row[1]) || 0,
               locked: Number(row[2]) || 0
@@ -323,11 +324,12 @@ function processSKUsAndDecrementStock() {
       if (rawRtoSku !== null && rawRtoSku !== undefined && rawRtoSku !== "") {
         const rtoSku = String(rawRtoSku).trim().toUpperCase();
         if (rtoSku) {
-          if (!skuToMappingInfo.has(rtoSku)) {
+          let normalizedRtoSku = _normalizeSku(rtoSku);
+          if (!skuToMappingInfo.has(normalizedRtoSku)) {
             rtoStatus = "RTO: ❌ (Not in Mapping Sheet)";
             rtoColor = "#FF0000"; // Red
           } else {
-            const inputMapping = skuToMappingInfo.get(rtoSku);
+            const inputMapping = skuToMappingInfo.get(normalizedRtoSku);
             let rtoMatch = null;
 
             // 1. Prioritize exact match
@@ -353,7 +355,7 @@ function processSKUsAndDecrementStock() {
             if (!rtoMatch) {
               // Distinguish between purely missing vs stock is 0
               let hasAnyAlias = false;
-              if (rtoInventoryInfoMap.has(rtoSku)) {
+              if (rtoInventoryInfoMap.has(normalizedRtoSku)) {
                 hasAnyAlias = true;
               } else {
                 for (const [inventorySku, rtoEntry] of rtoInventoryInfoMap.entries()) {
