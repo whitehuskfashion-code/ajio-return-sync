@@ -63,6 +63,7 @@ function processSKUsAndDecrementStock() {
     const testSheet = ss.getSheetByName("test sheet");
     const masterInventorySheet = ss.getSheetByName("master_inventory");
     const rtoInventorySheet = ss.getSheetByName("rto_inventory");
+    const bundleSheet = ss.getSheetByName("Bundle_SKU_Mapping");
 
     // --- 1. Validate that the required sheets exist ---
     if (!mappingSheet || !testSheet || !masterInventorySheet || !rtoInventorySheet) {
@@ -85,9 +86,25 @@ function processSKUsAndDecrementStock() {
     const rtoInventoryLastRow = rtoInventorySheet.getLastRow();
     const rtoInventoryData = rtoInventoryLastRow >= 2 ? rtoInventorySheet.getRange("A2:C" + rtoInventoryLastRow).getValues() : [];
 
-    // --- 3. Build comprehensive SKU lookup maps ---
+    const bundleData = bundleSheet ? bundleSheet.getDataRange().getValues() : [];
+    const bundleMap = new Map();
+    if (bundleData.length > 0) {
+      for (let i = 1; i < bundleData.length; i++) {
+        const row = bundleData[i];
+        const rawBundleSku = String(row[0] || "").trim().toUpperCase();
+        if (rawBundleSku) {
+          const bundleNorm = _normalizeSku(rawBundleSku);
+          const children = [];
+          for (let c = 1; c < row.length; c++) {
+            const child = String(row[c] || "").trim().toUpperCase();
+            if (child) children.push(child);
+          }
+          if (children.length > 0) bundleMap.set(bundleNorm, children);
+        }
+      }
+    }
 
-    // Build rto product lookup map
+    // --- 3. Build comprehensive SKU lookup maps ---
     const rtoInventoryInfoMap = new Map();
     rtoInventoryData.forEach((row, index) => {
       const rawRtoSku = row[0]; // Column A
@@ -106,38 +123,32 @@ function processSKUsAndDecrementStock() {
       }
     });
 
-    // FIXED: Map ALL SKUs regardless of Column A/C status
-    const skuToMappingInfo = new Map(); // SKU -> {productName, masterProductName, size, columnIndex}
-
+    const skuToMappingInfo = new Map();
     mappingData.forEach((row, rowIndex) => {
-      const rawProductName = row[0]; // Column A (can be empty)
-      const rawMasterProductName = row[2]; // Column C (can be empty)
+      const rawProductName = row[0];
+      const rawMasterProductName = row[2];
       const productName = (rawProductName === null || rawProductName === undefined || rawProductName === "") ? "" : String(rawProductName).trim().toUpperCase();
       const masterProductName = (rawMasterProductName === null || rawMasterProductName === undefined || rawMasterProductName === "") ? "" : String(rawMasterProductName).trim().toUpperCase();
 
-      // Iterate through SKU columns (D to AZ, which is index 3 to 51)
       for (let i = 3; i < row.length; i++) {
         const rawSku = row[i];
         if (rawSku !== null && rawSku !== undefined && rawSku !== "") {
           const sku = String(rawSku).trim().toUpperCase();
-          if (sku) { // If SKU exists after trimming
-            // Determine size based on column position
+          if (sku) {
             const actualColumnIndex = i + 1;
             let size = null;
-
-            if (actualColumnIndex >= 4) { // Start checking from column D
+            if (actualColumnIndex >= 4) {
               const sizeIndex = (actualColumnIndex - 4) % 4;
               switch (sizeIndex) {
-                case 0: size = 'S'; break;  // D, H, L, P, T, X, AB, AF...
-                case 1: size = 'M'; break;  // E, I, M, Q, U, Y, AC, AG...
-                case 2: size = 'L'; break;  // F, J, N, R, V, Z, AD, AH...
-                case 3: size = 'XL'; break; // G, K, O, S, W, AA, AE, AI...
+                case 0: size = 'S'; break;
+                case 1: size = 'M'; break;
+                case 2: size = 'L'; break;
+                case 3: size = 'XL'; break;
               }
             }
-
             skuToMappingInfo.set(_normalizeSku(sku), {
-              productName: productName || "", // Store empty string if null/undefined
-              masterProductName: masterProductName || "", // Store empty string if null/undefined
+              productName: productName || "",
+              masterProductName: masterProductName || "",
               size: size,
               columnIndex: actualColumnIndex,
               rowIndex: rowIndex
@@ -147,29 +158,24 @@ function processSKUsAndDecrementStock() {
       }
     });
 
-    // Build product lookup maps for test sheet
     const productInfoMap = new Map();
     testData.forEach((row, index) => {
-      const rawProductName = row[0]; // Column B
-      const stockCount = row[2];  // Column D
+      const rawProductName = row[0];
+      const stockCount = row[2];
       if (rawProductName !== null && rawProductName !== undefined && rawProductName !== "") {
         const productName = String(rawProductName).trim().toUpperCase();
         if (productName) {
           if (!productInfoMap.has(productName)) {
             productInfoMap.set(productName, []);
           }
-          productInfoMap.get(productName).push({
-            rowIndex: index,
-            stock: stockCount
-          });
+          productInfoMap.get(productName).push({ rowIndex: index, stock: stockCount });
         }
       }
     });
 
-    // Build master product lookup maps
     const masterProductInfoMap = new Map();
     masterInventoryData.forEach((row, index) => {
-      const rawMasterProductName = row[0]; // Column A
+      const rawMasterProductName = row[0];
       if (rawMasterProductName !== null && rawMasterProductName !== undefined && rawMasterProductName !== "") {
         const masterProductName = String(rawMasterProductName).trim().toUpperCase();
         if (masterProductName) {
@@ -178,12 +184,7 @@ function processSKUsAndDecrementStock() {
           }
           masterProductInfoMap.get(masterProductName).push({
             rowIndex: index,
-            stocks: {
-              S: row[1],  // Column B
-              M: row[3],  // Column D  
-              L: row[5],  // Column F
-              XL: row[7]  // Column H
-            }
+            stocks: { S: row[1], M: row[3], L: row[5], XL: row[7] }
           });
         }
       }
@@ -197,163 +198,178 @@ function processSKUsAndDecrementStock() {
     const masterInventoryDecrements = new Map();
 
     skusToProcess.forEach((row, index) => {
-      const rawRtoSku = row[0]; // Column H
-      const rawPrintSku = row[1]; // Column I
+      const rawRtoSku = row[0];
+      const rawPrintSku = row[1];
       let status = "";
       let rtoStatus = "";
-      let highlightColor = "#000000"; // Default black
-      let rtoColor = "#000000"; // Default black for RTO
+      let cellSeverity = 0; // 0=Black, 1=Purple, 2=Red
+      let rtoSeverity = 0;
 
+      // --- Process PRINT SKU ---
       if (rawPrintSku !== null && rawPrintSku !== undefined && rawPrintSku !== "") {
-        const sku = String(rawPrintSku).trim().toUpperCase();
-        if (sku) {
-          let originalOpStatus = "";
-          let masterOpStatus = "";
+        const inputSku = String(rawPrintSku).trim().toUpperCase();
+        if (inputSku) {
+          let printSkusToProcess = [inputSku];
+          let inputNorm = _normalizeSku(inputSku);
+          if (bundleMap.has(inputNorm)) {
+            printSkusToProcess = bundleMap.get(inputNorm);
+          }
 
-          // Check if SKU exists in mapping
-          const mappingInfo = skuToMappingInfo.get(_normalizeSku(sku));
+          let preFlightFailed = false;
+          let abortMsg = "";
 
-          if (mappingInfo) {
+          // --- PRINT PRE-FLIGHT CHECK ---
+          for (let sku of printSkusToProcess) {
+            const mappingInfo = skuToMappingInfo.get(_normalizeSku(sku));
+            if (!mappingInfo) {
+              preFlightFailed = true;
+              abortMsg = `${sku} not in Mapping Sheet`;
+              break;
+            }
             const productName = mappingInfo.productName;
             const masterProductName = mappingInfo.masterProductName;
-
-            // --- ORIGINAL OPERATION Logic ---
+            
             if (productName) {
-              // Column A has value - process normally
               const productEntries = productInfoMap.get(productName);
-              if (productEntries && productEntries.length > 0) {
+              if (!productEntries || productEntries.length === 0) {
+                preFlightFailed = true;
+                abortMsg = `${productName} not in test sheet`;
+                break;
+              }
+            }
+            if (masterProductName) {
+              const size = mappingInfo.size;
+              if (!size) {
+                preFlightFailed = true;
+                abortMsg = `Size not determined for column ${mappingInfo.columnIndex}`;
+                break;
+              }
+              const masterEntries = masterProductInfoMap.get(masterProductName);
+              if (!masterEntries || masterEntries.length === 0) {
+                preFlightFailed = true;
+                abortMsg = `${masterProductName} not in master_inventory`;
+                break;
+              }
+            }
+          }
+
+          // --- PRINT EXECUTION ---
+          if (preFlightFailed) {
+            status = `Print: ❌ (ABORTED: ${abortMsg}) | Plain/Ready Merch: ❌ (ABORTED)`;
+            cellSeverity = 2;
+          } else {
+            let printLogs = [];
+            let plainLogs = [];
+
+            for (let sku of printSkusToProcess) {
+              const mappingInfo = skuToMappingInfo.get(_normalizeSku(sku));
+              const productName = mappingInfo.productName;
+              const masterProductName = mappingInfo.masterProductName;
+              
+              let originalOpStatus = "";
+              let masterOpStatus = "";
+              
+              if (productName) {
+                const productEntries = productInfoMap.get(productName);
                 let decrementedCount = 0;
                 const warnings = [];
-
                 productEntries.forEach(entry => {
                   const stock = stockUpdates[entry.rowIndex][0];
                   if (typeof stock === 'number') {
                     stockUpdates[entry.rowIndex][0] = stock - 1;
                     decrementedCount++;
                   } else {
-                    warnings.push(`${productName} (row ${entry.rowIndex + 2}): typeof stock != 'number'`);
+                    warnings.push(`typeof stock != 'number'`);
                   }
                 });
-
+                
                 if (decrementedCount > 0) {
-                  originalOpStatus = `Print: ✅ (${decrementedCount} decremented)`;
+                  originalOpStatus = `✅ (${sku})`;
                   if (warnings.length) {
-                    originalOpStatus += `; Warnings: ${warnings.join('; ')}`;
+                    originalOpStatus += ` Warnings: ${warnings.join('; ')}`;
                   }
                 } else {
-                  originalOpStatus = `Print: ❌ (${warnings.join('; ')})`;
-                  highlightColor = "#FF0000"; // Red
+                  originalOpStatus = `❌ (${sku} warning: ${warnings.join('; ')})`;
+                  cellSeverity = 2;
                 }
               } else {
-                originalOpStatus = `Print: ❌ (${productName}: not in test sheet)`;
-                highlightColor = "#FF0000"; // Red
+                originalOpStatus = `No Print linked❌ (${sku})`;
+                cellSeverity = Math.max(cellSeverity, 1);
               }
-            } else {
-              // Column A is empty - no print linked
-              originalOpStatus = "Print: No Print linked❌";
-            }
+              printLogs.push(originalOpStatus);
 
-            // --- MASTER OPERATION Logic ---
-            if (masterProductName) {
-              // Column C has value - process master inventory
-              const size = mappingInfo.size;
-              if (!size) {
-                masterOpStatus = `Plain/Ready Merch: ❌ (Size not determined for column ${mappingInfo.columnIndex})`;
-                highlightColor = "#FF0000"; // Red
+              if (masterProductName) {
+                const size = mappingInfo.size;
+                if (!masterInventoryDecrements.has(masterProductName)) {
+                  masterInventoryDecrements.set(masterProductName, { S: 0, M: 0, L: 0, XL: 0 });
+                }
+                masterInventoryDecrements.get(masterProductName)[size]++;
+                masterOpStatus = `✅ (${sku})`;
               } else {
-                const masterEntries = masterProductInfoMap.get(masterProductName);
-                if (masterEntries && masterEntries.length > 0) {
-                  // Track this decrement
-                  if (!masterInventoryDecrements.has(masterProductName)) {
-                    masterInventoryDecrements.set(masterProductName, { S: 0, M: 0, L: 0, XL: 0 });
-                  }
-                  masterInventoryDecrements.get(masterProductName)[size]++;
-
-                  masterOpStatus = "Plain/Ready Merch: ✅ (1 decremented)";
+                if (productName) {
+                  masterOpStatus = `⚠️ Please link with master_inventory Column C (${sku})`;
+                  cellSeverity = 2; // Matches original script's overriding behavior
                 } else {
-                  masterOpStatus = `Plain/Ready Merch: ❌ (${masterProductName}: not in master_inventory)`;
-                  highlightColor = "#FF0000"; // Red
+                  masterOpStatus = `❌ (${sku} Both A and C empty)`;
+                  cellSeverity = 2;
                 }
               }
-            } else {
-              // Column C is empty
-              if (productName) {
-                // Column A has value but Column C is empty
-                masterOpStatus = "Plain/Ready Merch: Product: Please link with master_inventory Column C";
-                highlightColor = "#007BFF"; // Blue
-              } else {
-                // Both Column A and C are empty
-                masterOpStatus = "Plain/Ready Merch: ❌ (Both columns A and C are empty)";
-                highlightColor = "#FF0000"; // Red
-              }
+              plainLogs.push(masterOpStatus);
             }
 
-            // Determine final highlight color based on scenarios
-            if (!productName && masterProductName) {
-              // Scenario 1: Column A empty + Column C has value
-              highlightColor = "#800080"; // Purple
-            } else if (productName && masterProductName) {
-              // Scenario 2: Both columns have values - check if both operations succeeded
-              if (originalOpStatus.includes("✅") && masterOpStatus.includes("✅")) {
-                highlightColor = "#000000"; // Black (no highlighting)
-              } else {
-                highlightColor = "#FF0000"; // Red for any failures
-              }
-            } else if (productName && !masterProductName) {
-              // Scenario 3: Column A has value + Column C empty
-              highlightColor = "#FF0000"; // Red
-            }
-
-          } else {
-            // SKU not found in mapping sheet
-            originalOpStatus = "Print: ❌ (SKU not in Mapping Sheet)";
-            masterOpStatus = "Plain/Ready Merch: ❌ (SKU not in Mapping Sheet)";
-            highlightColor = "#FF0000"; // Red
+            status = `Print: ${printLogs.join(", ")} | Plain/Ready Merch: ${plainLogs.join(", ")}`;
           }
-
-          // Combine both operation statuses
-          status = originalOpStatus + " | " + masterOpStatus;
         }
       }
-      // else {
-      //   status = "No SKU provided";
-      //   highlightColor = "#FF0000"; // Red
-      // }
 
       // --- Process RTO SKU ---
       if (rawRtoSku !== null && rawRtoSku !== undefined && rawRtoSku !== "") {
-        const rtoSku = String(rawRtoSku).trim().toUpperCase();
-        if (rtoSku) {
-          let normalizedRtoSku = _normalizeSku(rtoSku);
-          if (!skuToMappingInfo.has(normalizedRtoSku)) {
-            rtoStatus = "RTO: ❌ (Not in Mapping Sheet)";
-            rtoColor = "#FF0000"; // Red
-          } else {
+        const inputRto = String(rawRtoSku).trim().toUpperCase();
+        if (inputRto) {
+          let rtoSkusToProcess = [inputRto];
+          let inputNorm = _normalizeSku(inputRto);
+          if (bundleMap.has(inputNorm)) {
+            rtoSkusToProcess = bundleMap.get(inputNorm);
+          }
+
+          let rtoPreFlightFailed = false;
+          let rtoAbortMsg = "";
+          let rtoMatches = [];
+          const simulatedRtoDeductions = new Map();
+
+          // --- RTO PRE-FLIGHT ---
+          for (let sku of rtoSkusToProcess) {
+            let normalizedRtoSku = _normalizeSku(sku);
+            if (!skuToMappingInfo.has(normalizedRtoSku)) {
+              rtoPreFlightFailed = true;
+              rtoAbortMsg = `${sku} Not in Mapping Sheet`;
+              break;
+            }
+            
             const inputMapping = skuToMappingInfo.get(normalizedRtoSku);
             let rtoMatch = null;
 
-            // 1. Prioritize exact match
-            let normalizedRto = _normalizeSku(rtoSku);
-            if (rtoInventoryInfoMap.has(normalizedRto) && rtoInventoryInfoMap.get(normalizedRto).count > 0) {
-              rtoMatch = rtoSku;
-            }
-            // 2. Fallback to scanning for alias
-            else {
+            let simulatedDeductExact = simulatedRtoDeductions.get(normalizedRtoSku) || 0;
+            if (rtoInventoryInfoMap.has(normalizedRtoSku) && (rtoInventoryInfoMap.get(normalizedRtoSku).count - simulatedDeductExact) > 0) {
+              rtoMatch = sku;
+              simulatedRtoDeductions.set(normalizedRtoSku, simulatedDeductExact + 1);
+            } else {
               for (const [inventorySku, rtoEntry] of rtoInventoryInfoMap.entries()) {
                 const inventoryMapping = skuToMappingInfo.get(inventorySku);
+                let simulatedDeductAlias = simulatedRtoDeductions.get(inventorySku) || 0;
                 if (inventoryMapping &&
                   inventoryMapping.rowIndex === inputMapping.rowIndex &&
                   inventoryMapping.size === inputMapping.size &&
-                  rtoEntry.count > 0) {
+                  (rtoEntry.count - simulatedDeductAlias) > 0) {
                   rtoMatch = inventorySku;
+                  simulatedRtoDeductions.set(inventorySku, simulatedDeductAlias + 1);
                   break;
                 }
               }
             }
 
-            // 3. Process result
             if (!rtoMatch) {
-              // Distinguish between purely missing vs stock is 0
+              rtoPreFlightFailed = true;
               let hasAnyAlias = false;
               if (rtoInventoryInfoMap.has(normalizedRtoSku)) {
                 hasAnyAlias = true;
@@ -368,36 +384,62 @@ function processSKUsAndDecrementStock() {
               }
 
               if (hasAnyAlias) {
-                rtoStatus = "RTO: ⚠️ (Stock already 0, cannot decrease)";
-                rtoColor = "#FF0000"; // Red
+                rtoAbortMsg = `${sku} Stock already 0`;
               } else {
-                rtoStatus = "RTO: ❌ (Valid SKU, but missing in rto_inventory sheet)";
-                rtoColor = "#FF0000"; // Red
+                rtoAbortMsg = `${sku} missing in rto_inventory`;
               }
+              break;
             } else {
-              // Found a valid match (exact or alias) with count > 0
-              const rtoEntry = rtoInventoryInfoMap.get(_normalizeSku(rtoMatch));
+              rtoMatches.push(_normalizeSku(rtoMatch));
+            }
+          }
+
+          // --- RTO EXECUTION ---
+          if (rtoPreFlightFailed) {
+            rtoStatus = `RTO: ❌ (ABORTED: ${rtoAbortMsg})`;
+            rtoSeverity = 2;
+          } else {
+            for (let rtoNorm of rtoMatches) {
+              const rtoEntry = rtoInventoryInfoMap.get(rtoNorm);
               rtoEntry.count -= 1;
               rtoEntry.locked = Math.max(0, rtoEntry.locked - 1);
-              // Silent success as requested
             }
+            rtoStatus = `RTO: ✅ (${rtoSkusToProcess.join(", ")} restored)`;
           }
         }
       }
 
-      // Combine statuses for Column J
-      if (rtoStatus) {
-        status = status ? (status + " | " + rtoStatus) : rtoStatus;
+      // --- FORMAT LOGS ---
+      let finalStatus = "";
+      if (status && rtoStatus) finalStatus = status + " | " + rtoStatus;
+      else if (status) finalStatus = status;
+      else if (rtoStatus) finalStatus = rtoStatus;
+
+      let highlightColor = "#000000";
+      if (cellSeverity === 2) highlightColor = "#FF0000";
+      else if (cellSeverity === 1) highlightColor = "#800080";
+
+      let rtoColor = "#000000";
+      if (rtoSeverity === 2) rtoColor = "#FF0000";
+      else if (rtoSeverity === 1) rtoColor = "#800080";
+
+      if (finalStatus.includes("✅") && 
+          !finalStatus.includes("❌") && 
+          !finalStatus.includes("⚠️") && 
+          !finalStatus.includes("Warning") && 
+          !finalStatus.includes("ABORTED")) {
+          finalStatus = "✅";
+          highlightColor = "#000000"; 
+          rtoColor = "#000000"; 
       }
 
-      results.push([status]);
+      results.push([finalStatus]);
       statusColors.push([highlightColor]);
       rtoColors.push([rtoColor]);
     });
 
     // --- 5. Apply master inventory decrements ---
     const masterStockUpdates = masterInventoryData.map(row => [row[1], row[3], row[5], row[7]]);
-
     masterInventoryDecrements.forEach((decrements, masterProductName) => {
       const masterEntries = masterProductInfoMap.get(masterProductName);
       if (masterEntries && masterEntries.length > 0) {
@@ -416,38 +458,31 @@ function processSKUsAndDecrementStock() {
 
     // --- 6. Write the updated data back to the sheets ---
     if (results.length > 0) {
-      // Write all status results to column J
       const statusRange = testSheet.getRange(2, 10, results.length, 1);
       statusRange.setValues(results);
 
-      // Apply color highlighting
       statusColors.forEach((colorRow, index) => {
         statusRange.getCell(index + 1, 1).setFontColor(colorRow[0]);
       });
 
-      // Apply RTO color highlighting to Column H
       testSheet.getRange(2, 8, rtoColors.length, 1).setFontColors(rtoColors);
-
-      // Write all updated stock counts to column D in test sheet
       testSheet.getRange(2, 4, stockUpdates.length, 1).setValues(stockUpdates);
 
-      // Write all updated master inventory stocks
       if (masterStockUpdates.length > 0) {
-        masterInventorySheet.getRange(2, 2, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[0]])); // Column B
-        masterInventorySheet.getRange(2, 4, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[1]])); // Column D
-        masterInventorySheet.getRange(2, 6, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[2]])); // Column F
-        masterInventorySheet.getRange(2, 8, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[3]])); // Column H
+        masterInventorySheet.getRange(2, 2, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[0]]));
+        masterInventorySheet.getRange(2, 4, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[1]]));
+        masterInventorySheet.getRange(2, 6, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[2]]));
+        masterInventorySheet.getRange(2, 8, masterStockUpdates.length, 1).setValues(masterStockUpdates.map(row => [row[3]]));
       }
 
-      // --- 7. Write updated RTO stock back to rto_inventory ---
       if (rtoInventoryData.length > 0) {
         const rtoStockUpdates = rtoInventoryData.map(row => {
           const rawSku = row[0];
           if (rawSku !== null && rawSku !== undefined && rawSku !== "") {
             const sku = String(rawSku).trim().toUpperCase();
             let normSku = _normalizeSku(sku);
-              if (sku && rtoInventoryInfoMap.has(normSku)) {
-                const entry = rtoInventoryInfoMap.get(normSku);
+            if (sku && rtoInventoryInfoMap.has(normSku)) {
+              const entry = rtoInventoryInfoMap.get(normSku);
               return [entry.count, entry.locked];
             }
           }
@@ -457,9 +492,7 @@ function processSKUsAndDecrementStock() {
       }
     }
 
-    // --- Store the timestamp of this successful run ---
     scriptProperties.setProperty(LAST_RUN_KEY, new Date().getTime().toString());
-
     ui.alert('✅ Processing Complete!', 'Stock counts and statuses have been updated for both test sheet and master_inventory.', ui.ButtonSet.OK);
 
   } catch (e) {
