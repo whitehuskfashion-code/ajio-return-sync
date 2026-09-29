@@ -26,6 +26,11 @@ function onOpen() {
 /**
  * Main function to process SKUs and update stock levels.
  */
+function _normalizeSku(sku) {
+  if (!sku) return "";
+  return String(sku).replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
 function processSKUsAndDecrementStock() {
   const ui = SpreadsheetApp.getUi();
   const scriptProperties = PropertiesService.getScriptProperties();
@@ -90,7 +95,7 @@ function processSKUsAndDecrementStock() {
         const rtoSku = String(rawRtoSku).trim().toUpperCase();
         if (rtoSku) {
           if (!rtoInventoryInfoMap.has(rtoSku)) {
-            rtoInventoryInfoMap.set(rtoSku, {
+            rtoInventoryInfoMap.set(_normalizeSku(rtoSku), {
               rowIndex: index,
               count: Number(row[1]) || 0,
               locked: Number(row[2]) || 0
@@ -129,7 +134,7 @@ function processSKUsAndDecrementStock() {
               }
             }
 
-            skuToMappingInfo.set(sku, {
+            skuToMappingInfo.set(_normalizeSku(sku), {
               productName: productName || "", // Store empty string if null/undefined
               masterProductName: masterProductName || "", // Store empty string if null/undefined
               size: size,
@@ -205,7 +210,7 @@ function processSKUsAndDecrementStock() {
           let masterOpStatus = "";
 
           // Check if SKU exists in mapping
-          const mappingInfo = skuToMappingInfo.get(sku);
+          const mappingInfo = skuToMappingInfo.get(_normalizeSku(sku));
 
           if (mappingInfo) {
             const productName = mappingInfo.productName;
@@ -326,7 +331,8 @@ function processSKUsAndDecrementStock() {
             let rtoMatch = null;
 
             // 1. Prioritize exact match
-            if (rtoInventoryInfoMap.has(rtoSku) && rtoInventoryInfoMap.get(rtoSku).count > 0) {
+            let normalizedRto = _normalizeSku(rtoSku);
+            if (rtoInventoryInfoMap.has(normalizedRto) && rtoInventoryInfoMap.get(normalizedRto).count > 0) {
               rtoMatch = rtoSku;
             }
             // 2. Fallback to scanning for alias
@@ -368,7 +374,7 @@ function processSKUsAndDecrementStock() {
               }
             } else {
               // Found a valid match (exact or alias) with count > 0
-              const rtoEntry = rtoInventoryInfoMap.get(rtoMatch);
+              const rtoEntry = rtoInventoryInfoMap.get(_normalizeSku(rtoMatch));
               rtoEntry.count -= 1;
               rtoEntry.locked = Math.max(0, rtoEntry.locked - 1);
               // Silent success as requested
@@ -437,8 +443,9 @@ function processSKUsAndDecrementStock() {
           const rawSku = row[0];
           if (rawSku !== null && rawSku !== undefined && rawSku !== "") {
             const sku = String(rawSku).trim().toUpperCase();
-            if (sku && rtoInventoryInfoMap.has(sku)) {
-              const entry = rtoInventoryInfoMap.get(sku);
+            let normSku = _normalizeSku(sku);
+              if (sku && rtoInventoryInfoMap.has(normSku)) {
+                const entry = rtoInventoryInfoMap.get(normSku);
               return [entry.count, entry.locked];
             }
           }
@@ -1371,7 +1378,7 @@ function generateRatioForSpecificRow(ss, sh, rowNum, product, paidRolls, formatt
 function cleanZeroRtoStock() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let ui = null;
-  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
+  try { ui = SpreadsheetApp.getUi(); } catch (e) { }
   const rtoSheet = ss.getSheetByName("rto_inventory");
 
   if (!rtoSheet) {
@@ -1418,7 +1425,7 @@ function cleanZeroRtoStock() {
 function updateDynamicWeights() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let ui = null;
-  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
+  try { ui = SpreadsheetApp.getUi(); } catch (e) { }
 
   // Update the Out-Of-Stock Ledger immediately before running weights math
   recordMidnightOOSSnapshot();
@@ -1508,8 +1515,9 @@ function updateDynamicWeights() {
       const rawSku = String(row[colIdx] || "").trim().toUpperCase();
       if (rawSku) {
         skuCount++;
-        if (lookupMap.has(rawSku)) duplicateSkus.add(rawSku);
-        else lookupMap.set(rawSku, i);
+        let norm = _normalizeSku(rawSku);
+        if (lookupMap.has(norm)) duplicateSkus.add(rawSku);
+        else lookupMap.set(norm, i);
       }
     }
 
@@ -1599,8 +1607,9 @@ function updateDynamicWeights() {
 
       totalProcessedSkus.add(rawSku);
 
-      if (lookupMap.has(rawSku)) {
-        let parentRow = lookupMap.get(rawSku);
+      let normalizedSku = _normalizeSku(rawSku);
+      if (lookupMap.has(normalizedSku)) {
+        let parentRow = lookupMap.get(normalizedSku);
         if (masterDict.has(parentRow)) {
           let design = masterDict.get(parentRow);
 
@@ -1769,7 +1778,7 @@ function updateDynamicWeights() {
 
   try {
     ss.toast("The Mapping Sheet has been successfully updated.", "✅ Dynamic Weights Updated");
-  } catch(e) {}
+  } catch (e) { }
 }
 
 // ==============================================================================
@@ -1849,7 +1858,7 @@ function recordMidnightOOSSnapshot() {
 function updateDynamicThresholds() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let ui = null;
-  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
+  try { ui = SpreadsheetApp.getUi(); } catch (e) { }
 
   const testSheet = ss.getSheetByName("test sheet");
   const mappingSheet = ss.getSheetByName("Mapping Sheet");
@@ -1939,7 +1948,7 @@ function updateDynamicThresholds() {
     for (let colIdx = 3; colIdx < row.length; colIdx++) {
       const rawSku = String(row[colIdx] || "").trim().toUpperCase();
       if (rawSku) {
-        lookupMap.set(rawSku, printName);
+        lookupMap.set(_normalizeSku(rawSku), printName);
       }
     }
   }
@@ -2028,8 +2037,9 @@ function updateDynamicThresholds() {
         rawSku = rawSku.replace(/^SKU:\s*/i, '').trim();
       }
 
-      if (lookupMap.has(rawSku)) {
-        let printName = lookupMap.get(rawSku);
+      let normalizedSku = _normalizeSku(rawSku);
+      if (lookupMap.has(normalizedSku)) {
+        let printName = lookupMap.get(normalizedSku);
         if (printDict.has(printName)) {
           let design = printDict.get(printName);
 
@@ -2131,5 +2141,5 @@ function updateDynamicThresholds() {
 
   try {
     ss.toast(`Thresholds updated! Festive Multiplier: ${festiveMultiplier}x`, "✅ Success");
-  } catch (e) {}
+  } catch (e) { }
 }
