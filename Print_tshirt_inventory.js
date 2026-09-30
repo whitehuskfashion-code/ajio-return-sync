@@ -1660,9 +1660,16 @@ function updateDynamicWeights() {
 
       totalProcessedSkus.add(rawSku);
 
-      let normalizedSku = _normalizeSku(rawSku);
-      if (lookupMap.has(normalizedSku)) {
-        let parentRow = lookupMap.get(normalizedSku);
+      let skusToProcess = [rawSku];
+      let bundleNorm = _normalizeSku(rawSku);
+      if (bundleMap.has(bundleNorm)) {
+        skusToProcess = bundleMap.get(bundleNorm);
+      }
+
+      for (let sku of skusToProcess) {
+        let normalizedSku = _normalizeSku(sku);
+        if (lookupMap.has(normalizedSku)) {
+          let parentRow = lookupMap.get(normalizedSku);
         if (masterDict.has(parentRow)) {
           let design = masterDict.get(parentRow);
 
@@ -1686,10 +1693,15 @@ function updateDynamicWeights() {
             }
           }
         }
-      } else {
-        let dateStr = getLocalYMD(new Date(saleTime));
-        missingSkus.add(`${sheetName} | ${dateStr} | ${rawSku}`);
-        uniqueMissingSkus.add(rawSku);
+        } else {
+          let dateStr = getLocalYMD(new Date(saleTime));
+          if (skusToProcess.length > 1) {
+            missingSkus.add(`${sheetName} | ${dateStr} | ${rawSku} (Child: ${sku})`);
+          } else {
+            missingSkus.add(`${sheetName} | ${dateStr} | ${rawSku}`);
+          }
+          uniqueMissingSkus.add(rawSku);
+        }
       }
     }
   }
@@ -2090,9 +2102,16 @@ function updateDynamicThresholds() {
         rawSku = rawSku.replace(/^SKU:\s*/i, '').trim();
       }
 
-      let normalizedSku = _normalizeSku(rawSku);
-      if (lookupMap.has(normalizedSku)) {
-        let printName = lookupMap.get(normalizedSku);
+      let skusToProcess = [rawSku];
+      let bundleNorm = _normalizeSku(rawSku);
+      if (bundleMap.has(bundleNorm)) {
+        skusToProcess = bundleMap.get(bundleNorm);
+      }
+
+      for (let sku of skusToProcess) {
+        let normalizedSku = _normalizeSku(sku);
+        if (lookupMap.has(normalizedSku)) {
+          let printName = lookupMap.get(normalizedSku);
         if (printDict.has(printName)) {
           let design = printDict.get(printName);
 
@@ -2111,6 +2130,7 @@ function updateDynamicThresholds() {
               }
             }
           }
+        }
         }
       }
     }
