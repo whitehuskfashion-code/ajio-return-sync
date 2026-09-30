@@ -1536,6 +1536,24 @@ function updateDynamicWeights() {
 
   // 1.3 Build Master Dictionary
   const mappingData = mappingSheet.getDataRange().getValues();
+  const bundleSheet = ss.getSheetByName("Bundle_SKU_Mapping");
+  const bundleData = bundleSheet ? bundleSheet.getDataRange().getValues() : [];
+  const bundleMap = new Map();
+  if (bundleData.length > 0) {
+    for (let i = 1; i < bundleData.length; i++) {
+      const row = bundleData[i];
+      const rawBundleSku = String(row[0] || "").trim().toUpperCase();
+      if (rawBundleSku) {
+        const bundleNorm = _normalizeSku(rawBundleSku);
+        const children = [];
+        for (let c = 1; c < row.length; c++) {
+          const child = String(row[c] || "").trim().toUpperCase();
+          if (child) children.push(child);
+        }
+        if (children.length > 0) bundleMap.set(bundleNorm, children);
+      }
+    }
+  }
   const masterDict = new Map();
   const lookupMap = new Map();
   const duplicateSkus = new Set();
@@ -1791,7 +1809,7 @@ function updateDynamicWeights() {
 
   // Email Alert for 2% Rule (using unique SKUs)
   let missingPct = (uniqueMissingSkus.size / (totalProcessedSkus.size || 1)) * 100;
-  if (missingPct > 2.0 && missingSkus.size > 0) {
+  if (missingSkus.size > 0) {
     let emailBody = "<h3>Unmapped SKUs Alert</h3>";
     emailBody += "<p>The following SKUs had sales but were not found in the Mapping Sheet.</p>";
     emailBody += "<table border='1' cellpadding='5'><tr><th>Platform | Date | Orphaned SKU</th></tr>";
