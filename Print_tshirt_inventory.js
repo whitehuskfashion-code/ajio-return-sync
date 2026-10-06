@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @OnlyCurrentDoc
  * This script automates stock deduction based on a list of SKUs.
  *
@@ -228,7 +228,7 @@ function processSKUsAndDecrementStock() {
             }
             const productName = mappingInfo.productName;
             const masterProductName = mappingInfo.masterProductName;
-            
+
             if (productName) {
               const productEntries = productInfoMap.get(productName);
               if (!productEntries || productEntries.length === 0) {
@@ -265,10 +265,10 @@ function processSKUsAndDecrementStock() {
               const mappingInfo = skuToMappingInfo.get(_normalizeSku(sku));
               const productName = mappingInfo.productName;
               const masterProductName = mappingInfo.masterProductName;
-              
+
               let originalOpStatus = "";
               let masterOpStatus = "";
-              
+
               if (productName) {
                 const productEntries = productInfoMap.get(productName);
                 let decrementedCount = 0;
@@ -282,7 +282,7 @@ function processSKUsAndDecrementStock() {
                     warnings.push(`typeof stock != 'number'`);
                   }
                 });
-                
+
                 if (decrementedCount > 0) {
                   originalOpStatus = `✅ (${sku})`;
                   if (warnings.length) {
@@ -345,7 +345,7 @@ function processSKUsAndDecrementStock() {
               rtoAbortMsg = `${sku} Not in Mapping Sheet`;
               break;
             }
-            
+
             const inputMapping = skuToMappingInfo.get(normalizedRtoSku);
             let rtoMatch = null;
 
@@ -423,14 +423,14 @@ function processSKUsAndDecrementStock() {
       if (rtoSeverity === 2) rtoColor = "#FF0000";
       else if (rtoSeverity === 1) rtoColor = "#800080";
 
-      if (finalStatus.includes("✅") && 
-          !finalStatus.includes("❌") && 
-          !finalStatus.includes("⚠️") && 
-          !finalStatus.includes("Warning") && 
-          !finalStatus.includes("ABORTED")) {
-          finalStatus = "✅";
-          highlightColor = "#000000"; 
-          rtoColor = "#000000"; 
+      if (finalStatus.includes("✅") &&
+        !finalStatus.includes("❌") &&
+        !finalStatus.includes("⚠️") &&
+        !finalStatus.includes("Warning") &&
+        !finalStatus.includes("ABORTED")) {
+        finalStatus = "✅";
+        highlightColor = "#000000";
+        rtoColor = "#000000";
       }
 
       results.push([finalStatus]);
@@ -1670,29 +1670,29 @@ function updateDynamicWeights() {
         let normalizedSku = _normalizeSku(sku);
         if (lookupMap.has(normalizedSku)) {
           let parentRow = lookupMap.get(normalizedSku);
-        if (masterDict.has(parentRow)) {
-          let design = masterDict.get(parentRow);
+          if (masterDict.has(parentRow)) {
+            let design = masterDict.get(parentRow);
 
-          // ACTIVE-TIME FILTER
-          if (isBlankActiveOnDate(design.blankType, saleTime)) {
-            let calendarDaysAgo = Math.floor(Math.max(0, (now - saleTime) / ONE_DAY_MS));
+            // ACTIVE-TIME FILTER
+            if (isBlankActiveOnDate(design.blankType, saleTime)) {
+              let calendarDaysAgo = Math.floor(Math.max(0, (now - saleTime) / ONE_DAY_MS));
 
-            if (calendarDaysAgo <= 240) {
-              let activeDaysAgo = activeDaysMap.get(design.blankType)[calendarDaysAgo];
+              if (calendarDaysAgo <= 240) {
+                let activeDaysAgo = activeDaysMap.get(design.blankType)[calendarDaysAgo];
 
-              if (activeDaysAgo <= HISTORY_WINDOW_ACTIVE_DAYS) {
-                // The Exponential Decay Distortion Fix
-                let recencyWeight = Math.exp(-activeDaysAgo / 30);
-                design.salesEMA += recencyWeight;
+                if (activeDaysAgo <= HISTORY_WINDOW_ACTIVE_DAYS) {
+                  // The Exponential Decay Distortion Fix
+                  let recencyWeight = Math.exp(-activeDaysAgo / 30);
+                  design.salesEMA += recencyWeight;
 
-                let recencyWeight15 = Math.exp(-activeDaysAgo / 15.0);
-                let recencyWeight75 = Math.exp(-activeDaysAgo / 75.0);
-                design.score15 += recencyWeight15;
-                design.score75 += recencyWeight75;
+                  let recencyWeight15 = Math.exp(-activeDaysAgo / 15.0);
+                  let recencyWeight75 = Math.exp(-activeDaysAgo / 75.0);
+                  design.score15 += recencyWeight15;
+                  design.score75 += recencyWeight75;
+                }
               }
             }
           }
-        }
         } else {
           let dateStr = getLocalYMD(new Date(saleTime));
           if (skusToProcess.length > 1) {
@@ -2112,25 +2112,25 @@ function updateDynamicThresholds() {
         let normalizedSku = _normalizeSku(sku);
         if (lookupMap.has(normalizedSku)) {
           let printName = lookupMap.get(normalizedSku);
-        if (printDict.has(printName)) {
-          let design = printDict.get(printName);
+          if (printDict.has(printName)) {
+            let design = printDict.get(printName);
 
-          if (isBlankActiveOnDate(design.blankType, saleTime)) {
-            let calendarDaysAgo = Math.floor(Math.max(0, (now - saleTime) / ONE_DAY_MS));
+            if (isBlankActiveOnDate(design.blankType, saleTime)) {
+              let calendarDaysAgo = Math.floor(Math.max(0, (now - saleTime) / ONE_DAY_MS));
 
-            if (calendarDaysAgo <= 240) {
-              let activeDaysAgo = activeDaysMap.get(design.blankType)[calendarDaysAgo];
+              if (calendarDaysAgo <= 240) {
+                let activeDaysAgo = activeDaysMap.get(design.blankType)[calendarDaysAgo];
 
-              if (activeDaysAgo <= HISTORY_WINDOW_ACTIVE_DAYS) {
-                // Dual-Velocity Decay
-                let recencyWeight15 = Math.exp(-activeDaysAgo / 15.0);
-                let recencyWeight75 = Math.exp(-activeDaysAgo / 75.0);
-                design.score15 += recencyWeight15;
-                design.score75 += recencyWeight75;
+                if (activeDaysAgo <= HISTORY_WINDOW_ACTIVE_DAYS) {
+                  // Dual-Velocity Decay
+                  let recencyWeight15 = Math.exp(-activeDaysAgo / 15.0);
+                  let recencyWeight75 = Math.exp(-activeDaysAgo / 75.0);
+                  design.score15 += recencyWeight15;
+                  design.score75 += recencyWeight75;
+                }
               }
             }
           }
-        }
         }
       }
     }
