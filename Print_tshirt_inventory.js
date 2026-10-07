@@ -1982,6 +1982,25 @@ function updateDynamicThresholds() {
   }
 
   // --- PHASE 2: Building the Print Master Dictionary & Festive Calendar ---
+  const bundleSheet = ss.getSheetByName("Bundle_SKU_Mapping");
+  const bundleData = bundleSheet ? bundleSheet.getDataRange().getValues() : [];
+  const bundleMap = new Map();
+  if (bundleData.length > 0) {
+    for (let i = 1; i < bundleData.length; i++) {
+      const row = bundleData[i];
+      const rawBundleSku = String(row[0] || "").trim().toUpperCase();
+      if (rawBundleSku) {
+        const bundleNorm = _normalizeSku(rawBundleSku);
+        const children = [];
+        for (let c = 1; c < row.length; c++) {
+          const child = String(row[c] || "").trim().toUpperCase();
+          if (child) children.push(child);
+        }
+        if (children.length > 0) bundleMap.set(bundleNorm, children);
+      }
+    }
+  }
+
   const mappingData = mappingSheet.getDataRange().getValues();
   const lookupMap = new Map(); // SKU -> PrintName
   const printDict = new Map(); // PrintName -> { score15: 0, score60: 0, launchDateMs: 0, blankType: '...' }
